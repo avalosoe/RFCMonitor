@@ -1,0 +1,6 @@
+@RFCMonitor_HostAddress = http://localhost:5007
+
+GET {{RFCMonitor_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
