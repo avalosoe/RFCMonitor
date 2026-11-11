@@ -5,7 +5,7 @@ public sealed class AgentOptions
     public int Version { get; set; } = 1;
     public string ConnectionString { get; set; } = "";
     public string ProtectedConnectionString { get; set; } = "";
-    public string DataDirectory { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "MonitorRFC");
+    public string DataDirectory { get; set; } = @"C:\Servicios\MonitorRFC\data";
     public bool SatEnabled { get; set; } = true;
     public string[] EnabledSatSources { get; set; } = [];
     public bool DofEnabled { get; set; } = true;
@@ -42,8 +42,12 @@ public sealed class EmailOptions
     public string[] Cc { get; set; } = [];
     public string[] Bcc { get; set; } = [];
     public string[] NotifyResults { get; set; } = ["cambios", "sin-cambios", "parcial", "fallida", "cancelada"];
-    public string SubjectTemplate { get; set; } = "Actualización de EDOS y EFOS | {{Resultado}}";
-    public string HtmlTemplate { get; set; } = "<html><head><meta charset=\"UTF-8\"></head><body style=\"margin:0;padding:0;background-color:#f4f4f4;font-family:Arial,sans-serif;text-align:center;\"><table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" border=\"0\" style=\"background-color:#f4f4f4;padding:20px 0;\"><tr><td align=\"center\"><table role=\"presentation\" width=\"600\" cellspacing=\"0\" cellpadding=\"0\" border=\"0\" style=\"background:#ffffff;padding:20px;border-radius:10px;\"><tr><td align=\"center\" style=\"background:#0073e6;color:#ffffff;font-size:20px;padding:15px;border-radius:10px 10px 0 0;\"><strong>Actualización de EDOS y EFOS</strong></td></tr><tr><td align=\"center\" style=\"padding:20px;font-size:16px;color:#333333;\">{{Mensaje}}</td></tr><tr><td align=\"center\" style=\"padding:15px;font-size:12px;color:#666666;\">Este es un mensaje automático, por favor no responda este correo.</td></tr></table></td></tr></table></body></html>";
+    public string SubjectTemplate { get; set; } = "MonitorRFC | Resumen {{Resultado}} | {{InicioUtc}}";
+    public string HtmlTemplate { get; set; } = EmailTemplateDefaults.SummaryHtml;
+}
+public static class EmailTemplateDefaults
+{
+    public const string SummaryHtml = "<html><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"></head><body style=\"margin:0;padding:0;background:#f4f4f4;font-family:Arial,sans-serif;color:#333;\"><table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" border=\"0\" style=\"padding:20px 0;background:#f4f4f4;\"><tr><td align=\"center\"><table role=\"presentation\" width=\"600\" cellspacing=\"0\" cellpadding=\"0\" border=\"0\" style=\"width:600px;max-width:600px;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 2px 5px rgba(0,0,0,.1);\"><tr><td align=\"center\" style=\"background:#0073e6;color:#fff;font-size:20px;padding:16px;\"><strong>Resumen de ejecución · MonitorRFC</strong></td></tr><tr><td style=\"padding:20px;font-size:14px;\"><p style=\"margin-top:0;font-size:16px;\"><strong>Resultado: {{Resultado}}</strong></p><table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"5\" border=\"0\" style=\"background:#f8fafc;border:1px solid #dbe3ec;\"><tr><td><strong>Inicio</strong></td><td>{{InicioUtc}}</td></tr><tr><td><strong>Fin</strong></td><td>{{FinUtc}}</td></tr><tr><td><strong>Duración</strong></td><td>{{Duracion}}</td></tr><tr><td><strong>Equipo</strong></td><td>{{Equipo}}</td></tr><tr><td><strong>Registros</strong></td><td>{{Registros}}</td></tr></table><h3 style=\"margin:20px 0 8px;color:#0073e6;\">Fuentes procesadas</h3>{{ResumenHtml}}{{ErroresHtml}}</td></tr><tr><td align=\"center\" style=\"padding:15px;background:#f8fafc;font-size:12px;color:#666;\">Ejecución {{EjecucionId}} · Este es un mensaje automático, por favor no responda este correo.</td></tr></table></td></tr></table></body></html>";
 }
 public sealed record AgentCommand(string Action);
 public sealed record AgentReply(bool Success, string Message, AgentStatus? Status = null);

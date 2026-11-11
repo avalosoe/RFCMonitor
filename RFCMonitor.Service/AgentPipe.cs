@@ -27,12 +27,13 @@ public sealed class AgentPipe(AgentWorker worker, ILogger<AgentPipe> logger) : B
                 while (bytes.Count < 4096 && await pipe.ReadAsync(buffer, timeout.Token) > 0 && buffer[0] != '\n') bytes.Add(buffer[0]);
                 if (bytes.Count >= 4096) throw new InvalidDataException("Comando demasiado grande.");
                 var command = JsonSerializer.Deserialize<AgentCommand>(Encoding.UTF8.GetString(bytes.ToArray()), AgentConfiguration.Json);
+                logger.LogInformation("Comando local recibido: {Action}", command?.Action ?? "(vacío)");
                 var reply = worker.Command(command?.Action ?? "");
                 var response = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(reply, AgentConfiguration.Json) + "\n");
                 await pipe.WriteAsync(response, timeout.Token); await pipe.FlushAsync(timeout.Token);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
-            catch (Exception ex) { logger.LogWarning("Comando local rechazado: {Tipo}", ex.GetType().Name); }
+            catch (Exception ex) { logger.LogWarning(ex, "Comando local rechazado."); }
         }
     }
 }

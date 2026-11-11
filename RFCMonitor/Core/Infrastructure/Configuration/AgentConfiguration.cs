@@ -14,7 +14,7 @@ public sealed class AgentConfiguration
     public string FilePath { get; }
     public AgentConfiguration(string? path = null) => FilePath = Path.GetFullPath(path ??
         Environment.GetEnvironmentVariable("MONITORRFC_CONFIG") ??
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "MonitorRFC", "agentsettings.json"));
+        @"C:\Servicios\MonitorRFC\config\agentsettings.json");
     public AgentOptions Load()
     {
         var value = File.Exists(FilePath) ? JsonSerializer.Deserialize<AgentOptions>(File.ReadAllText(FilePath), Json)

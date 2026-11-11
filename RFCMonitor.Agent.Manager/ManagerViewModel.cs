@@ -29,12 +29,28 @@ public sealed class ManagerViewModel : INotifyPropertyChanged
     public bool SqlEncrypt { get; set; }
     public bool SqlTrustServerCertificate { get; set; }
     public string NewPassword { get; set; } = "";
-    public string ServicePath { get; set; } = @"C:\Servicios\RFCMonitor\MonitorRFC.Service.exe";
+    public string ServicePath { get; set; } = @"C:\Servicios\RFCMonitor";
     public string Message { get; private set; } = "Configure SQL y fuentes antes de iniciar. Los secretos guardados no se muestran.";
     public string Diagnostics { get; private set; } = "";
     public string DailyHours { get; set; } = "08:00; 20:00";
     public string[] ScheduleModes { get; } = ["Cada N minutos", "Diaria (horas)", "Diaria (una hora)", "Semanal", "Cron avanzado"];
-    public string SelectedScheduleMode { get; set; } = "Diaria (horas)";
+    private string selectedScheduleMode = "Diaria (horas)";
+    public string SelectedScheduleMode
+    {
+        get => selectedScheduleMode;
+        set
+        {
+            if (selectedScheduleMode == value) return;
+            selectedScheduleMode = value;
+            foreach (var name in new[] { nameof(SelectedScheduleMode), nameof(IsIntervalSchedule), nameof(IsDailyHoursSchedule), nameof(IsDailySchedule), nameof(IsWeeklySchedule), nameof(IsCronSchedule) })
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        }
+    }
+    public bool IsIntervalSchedule => SelectedScheduleMode == "Cada N minutos";
+    public bool IsDailyHoursSchedule => SelectedScheduleMode == "Diaria (horas)";
+    public bool IsDailySchedule => SelectedScheduleMode == "Diaria (una hora)";
+    public bool IsWeeklySchedule => SelectedScheduleMode == "Semanal";
+    public bool IsCronSchedule => SelectedScheduleMode == "Cron avanzado";
     public string[] TlsModes { get; } = ["StartTls", "SslOnConnect"];
     public ObservableCollection<SourceSelection> Sources { get; } = [];
     public string[] DofStartModes { get; } = ["Hoy", "Ayer", "Días atrás"];
@@ -177,7 +193,7 @@ public sealed class ManagerViewModel : INotifyPropertyChanged
         if (times.Select(t => t.Minute).Distinct().Count() != 1) throw new ArgumentException("Todas las horas diarias deben usar los mismos minutos.");
         return $"{times[0].Minute} {string.Join(',', times.Select(t => t.Hour))} * * *";
     }
-    private async Task ExecuteAsync(string command)
+    public async Task ExecuteAsync(string command)
     {
         try
         {
@@ -193,13 +209,23 @@ public sealed class ManagerViewModel : INotifyPropertyChanged
                     PropertyChanged?.Invoke(this,new PropertyChangedEventArgs(null));
                     Message="Respaldo restaurado. Recargue el servicio para aplicarlo.";break;
                 case "browse":
-                    var dialog = new OpenFileDialog { Title = "Seleccione MonitorRFC.Service.exe", Filter = "MonitorRFC.Service.exe|MonitorRFC.Service.exe|Ejecutables (*.exe)|*.exe", FileName = "MonitorRFC.Service.exe" };
+                    var dialog = new OpenFileDialog
+                    {
+                        Title = "Seleccione el ejecutable publicado del servicio",
+                        Filter = "Ejecutables (*.exe)|*.exe",
+                        InitialDirectory = Directory.Exists(ServicePath) ? ServicePath : Path.GetDirectoryName(ServicePath)
+                    };
                     if (dialog.ShowDialog() == true) ServicePath = dialog.FileName;
                     Message = "Ruta del servicio actualizada.";
                     PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ServicePath)));
                     break;
                 case "install": case "uninstall": case "start": case "stop": case "restart":
                     Message = await Task.Run(() => ServiceAdministration.Execute(command, ServicePath)); RefreshServiceState(); break;
+                case "status":
+                    RefreshServiceState();
+                    Diagnostics = "SCM: " + ServiceStatus;
+                    Message = "Estado del servicio actualizado.";
+                    break;
                 case "save":
                     var value = Edited(); configuration.Save(value); Options = value;
                     PropertyChanged?.Invoke(this, new(nameof(Options)));
@@ -217,6 +243,12 @@ public sealed class ManagerViewModel : INotifyPropertyChanged
                 case "preview":
                     UpdatePreview();
                     Message = "Vista previa segura actualizada; no carga imágenes ni recursos externos."; break;
+                case "default-email":
+                    Options.Email.SubjectTemplate = "MonitorRFC | Resumen {{Resultado}} | {{InicioUtc}}";
+                    Options.Email.HtmlTemplate = EmailTemplateDefaults.SummaryHtml;
+                    UpdatePreview();
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Options)));
+                    Message = "Plantilla predeterminada de resumen cargada. Guarde para conservarla."; break;
                 case "test-email":
                     using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(40)))
                         await EmailOutbox.SendAsync(Edited().Email, EmailTemplates.Sample(), timeout.Token);
@@ -234,6 +266,11 @@ public sealed class ManagerViewModel : INotifyPropertyChanged
         }
         if (command == "status") RefreshServiceState();
         PropertyChanged?.Invoke(this, new(nameof(Message))); PropertyChanged?.Invoke(this, new(nameof(Diagnostics)));
+    }
+    public void NotifyActionStarted(string action)
+    {
+        Message = action + "…";
+        PropertyChanged?.Invoke(this, new(nameof(Message)));
     }
     public sealed class SourceSelection(string key, string article, string name, bool enabled) : INotifyPropertyChanged
     {

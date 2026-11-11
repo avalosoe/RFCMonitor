@@ -14,6 +14,8 @@ La solución contiene exactamente tres proyectos:
 
 Todos usan .NET 9 (`net9.0`; Worker y Manager usan `net9.0-windows`). No hay proyectos de pruebas en la solución.
 
+La programación configurada en el Manager se ejecuta en el Worker: admite intervalo, diaria a una hora, semanal, cron avanzado y diaria por varias horas. La opción predeterminada es diaria a las `08:00` y `20:00`; el servicio valida la programación antes de aceptar la configuración.
+
 ## Funcionalidad migrada
 
 - Descarga del catálogo de producción del SAT y de sus CSV/XLS para los artículos 69, 69-B y 69-B Bis.
@@ -28,7 +30,11 @@ Todos usan .NET 9 (`net9.0`; Worker y Manager usan `net9.0-windows`). No hay pro
 
 Ejecute los scripts de `database/` en orden numérico sobre SQL Server. Todos los objetos se crean y utilizan en el esquema `dbo`. Consulte [database/README.md](database/README.md) para identidades y operación.
 
-Configure la API con `ConnectionStrings__MonitorRFC`. En el Manager, la conexión del Worker se captura como servidor, base de datos, usuario, contraseña, cifrado opcional y confianza del certificado. La confianza del certificado inicia desmarcada; al indicar la contraseña el Manager construye la cadena, la cifra con DPAPI y la guarda en `%ProgramData%\MonitorRFC\agentsettings.json`. Nunca guarde secretos reales en `appsettings.json`.
+Configure la API con `ConnectionStrings__MonitorRFC`. En el Manager, la conexión del Worker se captura como servidor, base de datos, usuario, contraseña, cifrado opcional y confianza del certificado. La confianza del certificado inicia desmarcada; al indicar la contraseña el Manager construye la cadena, la cifra con DPAPI y la guarda en `C:\Servicios\MonitorRFC\config\agentsettings.json`. Las evidencias, ejecuciones y correo se conservan en `C:\Servicios\MonitorRFC\data`. Nunca guarde secretos reales en `appsettings.json`.
+
+## Bitácoras
+
+La API escribe en `log\api-AAAAmmdd.log` junto a su publicación y el Worker en `C:\Servicios\MonitorRFC\log\service-AAAAmmdd.log`. Cada entrada incluye fecha UTC, nivel, componente, operación y la excepción completa cuando existe. Al iniciar un nuevo día, el archivo del día anterior se comprime como `.zip`; se conservan únicamente los últimos 15 días (incluido el actual).
 
 ## Compilación
 

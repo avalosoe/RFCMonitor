@@ -8,6 +8,7 @@ namespace MonitorRFC.Agent.Manager;
 public static class ServiceAdministration
 {
     private const string Name = "MonitorRFC.Service";
+    public static readonly string InstallDirectory = @"C:\Servicios\MonitorRFC";
     public static string Status()
     {
         try { using var service = new ServiceController(Name); return service.Status.ToString(); }
@@ -19,14 +20,20 @@ public static class ServiceAdministration
         {
             if (Status() != "No instalado") return "El servicio ya está instalado.";
             binary = Path.GetFullPath(binary);
-            if (!File.Exists(binary) || !string.Equals(Path.GetFileName(binary), "MonitorRFC.Service.exe", StringComparison.OrdinalIgnoreCase))
-                throw new ArgumentException("Seleccione el ejecutable publicado MonitorRFC.Service.exe.");
+            if (!File.Exists(binary) || !string.Equals(Path.GetExtension(binary), ".exe", StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("Seleccione el archivo .exe publicado que ejecuta el servicio.");
+            var sourceDirectory = Path.GetDirectoryName(binary)!;
+            Directory.CreateDirectory(InstallDirectory);
+            if (!string.Equals(Path.GetFullPath(sourceDirectory).TrimEnd(Path.DirectorySeparatorChar), InstallDirectory.TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))
+                CopyPublication(sourceDirectory, InstallDirectory);
+            binary = Path.Combine(InstallDirectory, Path.GetFileName(binary));
+            if (!File.Exists(binary)) throw new InvalidDataException("No se pudo copiar el ejecutable del servicio a " + InstallDirectory + ".");
             using var scm = OpenSCManager(null, null, 0x0002);
             Check(scm);
             using var created = CreateService(scm, Name, "MonitorRFC · Recolección SAT y DOF", 0xF01FF, 0x10, 2, 1,
                 "\"" + binary + "\"", null, IntPtr.Zero, null, @"NT AUTHORITY\NetworkService", null);
             Check(created);
-            return "Servicio instalado con NetworkService. Configure los permisos SQL y datos antes de iniciarlo.";
+            return "Servicio instalado en " + InstallDirectory + " con inicio automático. Configure SQL antes de iniciarlo.";
         }
         if (action == "uninstall")
         {
@@ -56,6 +63,17 @@ public static class ServiceAdministration
             }
         }
         return "Estado: " + Status();
+    }
+    private static void CopyPublication(string source, string destination)
+    {
+        foreach (var directory in Directory.EnumerateDirectories(source, "*", SearchOption.AllDirectories))
+            Directory.CreateDirectory(Path.Combine(destination, Path.GetRelativePath(source, directory)));
+        foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+        {
+            var target = Path.Combine(destination, Path.GetRelativePath(source, file));
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            File.Copy(file, target, true);
+        }
     }
     private static void Check(ServiceHandle handle) { if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error()); }
     private sealed class ServiceHandle : SafeHandleZeroOrMinusOneIsInvalid

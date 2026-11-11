@@ -1,9 +1,13 @@
+using System.Diagnostics;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.RateLimiting;
 using MonitorRFC.Application;
+using MonitorRFC.Infrastructure.Logging;
 using MonitorRFC.Infrastructure.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
+var apiLogDirectory = Path.Combine(AppContext.BaseDirectory, "log");
+builder.Logging.AddProvider(new RollingFileLoggerProvider(() => apiLogDirectory, "api"));
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
 builder.Services.AddProblemDetails();
@@ -27,10 +31,22 @@ builder.Services.AddRateLimiter(o =>
     };
 });
 var app = builder.Build();
+app.Logger.LogInformation("API iniciada. Bitácora: {LogDirectory}", apiLogDirectory);
+app.Use(async (context, next) =>
+{
+    var started = Stopwatch.GetTimestamp();
+    try { await next(); }
+    finally
+    {
+        var elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+        app.Logger.LogInformation("HTTP {Method} {Path} => {StatusCode} en {ElapsedMs:0} ms. TraceId={TraceId}",
+            context.Request.Method, context.Request.Path, context.Response.StatusCode, elapsed, context.TraceIdentifier);
+    }
+});
 app.UseExceptionHandler(error => error.Run(async context =>
 {
     var exception = context.Features.Get<IExceptionHandlerFeature>()?.Error;
-    app.Logger.LogError("Consulta fallida {TraceId}: {ErrorType}", context.TraceIdentifier, exception?.GetType().Name);
+    app.Logger.LogError(exception, "Consulta fallida. TraceId={TraceId}", context.TraceIdentifier);
     var status = exception is BadHttpRequestException bad ? bad.StatusCode : 503;
     await Results.Problem(statusCode: status, title: status == 413 ? "Cuerpo demasiado grande." : "No se pudo completar la consulta.",
         extensions: new Dictionary<string, object?> { ["traceId"] = context.TraceIdentifier }).ExecuteAsync(context);

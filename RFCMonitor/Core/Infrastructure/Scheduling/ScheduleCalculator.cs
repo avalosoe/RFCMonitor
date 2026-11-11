@@ -24,6 +24,18 @@ public static class ScheduleCalculator
             throw new ArgumentException("Días de semana inválidos (0=domingo).");
         try { _ = CronExpression.Parse(Expression(schedule)); }
         catch (CronFormatException) { throw new ArgumentException("Expresión cron inválida (cinco campos)."); }
+        if (schedule.Mode == "daily-hours") ValidateDailyHours(schedule.Cron);
+    }
+    private static void ValidateDailyHours(string expression)
+    {
+        var fields = expression.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (fields.Length != 5 || fields[2] != "*" || fields[3] != "*" || fields[4] != "*")
+            throw new ArgumentException("La programación diaria por horas solo admite horas diarias; use Cron avanzado para reglas complejas.");
+        if (!int.TryParse(fields[0], out var minute) || minute is < 0 or > 59)
+            throw new ArgumentException("Minuto inválido para programación diaria por horas.");
+        var hours = fields[1].Split(',', StringSplitOptions.RemoveEmptyEntries);
+        if (hours.Length == 0 || hours.Any(hour => !int.TryParse(hour, out var value) || value is < 0 or > 23))
+            throw new ArgumentException("Hora inválida para programación diaria por horas.");
     }
     private static string Expression(ScheduleOptions schedule)
     {
@@ -32,7 +44,8 @@ public static class ScheduleCalculator
         {
             "daily" => $"{time.Minute} {time.Hour} * * *",
             "weekly" => $"{time.Minute} {time.Hour} * * {string.Join(',', schedule.WeekDays.Distinct().Order())}",
-            _ => schedule.Cron
+            "cron" or "daily-hours" => schedule.Cron,
+            _ => throw new ArgumentException("Programación desconocida.")
         };
     }
     public static DateTimeOffset? Next(ScheduleOptions schedule, DateTimeOffset after)

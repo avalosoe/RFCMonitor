@@ -50,6 +50,7 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var root = Path.GetDirectoryName(configuration.FilePath)!;
+        logger.LogInformation("Inicializando Worker. Configuración={ConfigPath}", configuration.FilePath);
         AgentConfiguration.SecureDirectory(root);
         // FileShare.None persists exclusive ownership for the lifetime of this process and releases on crash.
         using var localLock = new FileStream(Path.Combine(root, "agent.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
@@ -63,8 +64,10 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
                 AgentConfiguration.SecureDirectory(options.DataDirectory);
                 state.Next ??= ScheduleCalculator.Next(options.Schedule, DateTimeOffset.UtcNow);
                 if (options.Schedule.RunOnStartup) { state.Queued = true; state.Trigger = "arranque"; }
+                logger.LogInformation("Configuración cargada. SAT={SatEnabled}; DOF={DofEnabled}; programación={Mode}; próxima={NextRunUtc}; datos={DataDirectory}",
+                    options.SatEnabled, options.DofEnabled, options.Schedule.Mode, state.Next, options.DataDirectory);
             }
-            catch (Exception ex) { error = SafeError.Describe(ex); }
+            catch (Exception ex) { error = SafeError.Describe(ex); logger.LogError(ex, "No se pudo cargar la configuración del Worker."); }
             Persist();
         }
         while (!stoppingToken.IsCancellationRequested)
@@ -75,7 +78,7 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
                 if (options is not null)
                 {
                     if (options.Schedule.Enabled && state.Next <= DateTimeOffset.UtcNow)
-                    { state.Queued = true; state.Trigger = "programada"; }
+                    { state.Queued = true; state.Trigger = "programada"; logger.LogInformation("Ejecución programada encolada."); }
                     if (state.Queued)
                     {
                         runOptions = options; trigger = state.Trigger;
@@ -88,7 +91,7 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
             if (runOptions is not null) await RunCycleAsync(runOptions, trigger, stoppingToken);
             try { await outbox.DispatchAsync(stoppingToken); }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-            catch (Exception ex) { logger.LogWarning("Correo pendiente: {Tipo}", ex.GetType().Name); }
+            catch (Exception ex) { logger.LogWarning(ex, "No se pudo despachar un correo pendiente."); }
             try { await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken); }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
         }
@@ -100,35 +103,55 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
         var repo = new SqlRepository(AgentConfiguration.GetConnection(settings));
         try
         {
+            logger.LogInformation("Inicio de ejecución. Disparador={Trigger}; SAT={SatEnabled}; DOF={DofEnabled}", trigger, settings.SatEnabled, settings.DofEnabled);
             await using var lease = await repo.AcquireLeaseAsync(ct);
             if (lease is null) throw new InvalidDataException("Otra instancia mantiene el bloqueo de ingesta; reintente.");
+            logger.LogInformation("Bloqueo de ingesta adquirido; validando catálogos SQL.");
             await repo.EnsureCatalogAsync(ct, settings);
+            logger.LogInformation("Catálogos SQL listos.");
             using var downloader = new SafeDownloader();
             if (settings.SatEnabled)
             {
-                try { report.Fuentes.AddRange(await new SatCollector(downloader, repo).RunAsync(settings, ct)); }
+                try
+                {
+                    logger.LogInformation("Iniciando recolección SAT.");
+                    var results = await new SatCollector(downloader, repo).RunAsync(settings, ct);
+                    report.Fuentes.AddRange(results);
+                    logger.LogInformation("SAT finalizado. Fuentes={Sources}; registros={Records}; fallidas={Failed}", results.Count, results.Sum(x => x.Registros), results.Count(x => x.Resultado == "fallida"));
+                }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                 catch (Exception ex)
                 {
+                    logger.LogError(ex, "La recolección SAT terminó con error.");
                     foreach (var listing in MonitorRFC.Domain.SourceCatalog.Sat.Where(l => settings.EnabledSatSources.Length == 0 || settings.EnabledSatSources.Contains(l.Key)))
                         report.Fuentes.Add(new(listing.Key, "fallida", 0, SafeError.Describe(ex)));
                 }
             }
             if (settings.DofEnabled)
             {
-                try { report.Fuentes.AddRange(await new DofCollector(downloader, repo).RunAsync(settings, ct)); }
+                try
+                {
+                    logger.LogInformation("Iniciando recolección DOF desde {DofStartDate}.", settings.DofStartDate);
+                    var results = await new DofCollector(downloader, repo).RunAsync(settings, ct);
+                    report.Fuentes.AddRange(results);
+                    logger.LogInformation("DOF finalizado. Fuentes={Sources}; registros={Records}; fallidas={Failed}", results.Count, results.Sum(x => x.Registros), results.Count(x => x.Resultado == "fallida"));
+                }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-                catch (Exception ex) { report.Fuentes.Add(new("dof:publicaciones", "fallida", 0, SafeError.Describe(ex))); }
+                catch (Exception ex) { logger.LogError(ex, "La recolección DOF terminó con error."); report.Fuentes.Add(new("dof:publicaciones", "fallida", 0, SafeError.Describe(ex))); }
             }
-            if (report.Fuentes.Any(r => r.Resultado is "cambios" or "sin-cambios")) await repo.PublishGenerationAsync(ct);
+            if (report.Fuentes.Any(r => r.Resultado is "cambios" or "sin-cambios"))
+            {
+                logger.LogInformation("Publicando nueva generación de datos.");
+                await repo.PublishGenerationAsync(ct);
+            }
             report.Resultado = Outcome(report.Fuentes);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { report.Resultado = "cancelada"; }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { report.Resultado = "cancelada"; logger.LogWarning("Ejecución cancelada por detención del servicio."); }
         catch (Exception ex)
         {
             report.Fuentes.Add(new("sistema", "fallida", 0, SafeError.Describe(ex)));
             report.Resultado = Outcome(report.Fuentes);
-            logger.LogError("Ciclo fallido: {Tipo}", ex.GetType().Name);
+            logger.LogError(ex, "Ciclo fallido.");
         }
         finally
         {
@@ -137,9 +160,9 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
             var history = Path.Combine(settings.DataDirectory, "executions", report.EjecucionId.ToString("N") + ".json");
             AgentConfiguration.AtomicWrite(history, JsonSerializer.Serialize(report, AgentConfiguration.Json));
             try { await repo.SaveExecutionAsync(report, finish.Token); }
-            catch (Exception ex) { logger.LogWarning("Resumen conservado localmente: {Tipo}", ex.GetType().Name); }
+            catch (Exception ex) { logger.LogWarning(ex, "No se pudo guardar el resumen en SQL; se conservó localmente en {HistoryPath}.", history); }
             try { await outbox.EnqueueAsync(report, finish.Token); }
-            catch (Exception ex) { logger.LogWarning("No se pudo encolar correo: {Tipo}", ex.GetType().Name); }
+            catch (Exception ex) { logger.LogWarning(ex, "No se pudo encolar el correo de resumen."); }
             lock (gate)
             {
                 state.Last = report; state.Running = false;
