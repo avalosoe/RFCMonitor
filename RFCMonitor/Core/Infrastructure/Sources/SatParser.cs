@@ -37,26 +37,32 @@ public static class SatParser
         using var parser=new TextFieldParser(path,DetectEncoding(path),true) {TextFieldType=FieldType.Delimited,HasFieldsEnclosedInQuotes=true,TrimWhiteSpace=false};
         parser.SetDelimiters(",");
         string[]? headers=null;
+        var physicalRow=0;
         for(var i=0;i<40&&!parser.EndOfData;i++)
         {
             var fields=parser.ReadFields()!;
+            physicalRow++;
             if(fields.Any(x=>TextKey.Normalize(x)=="RFC")) {headers=fields;break;}
         }
         if(headers is null) throw new InvalidDataException("No se encontró cabecera RFC.");
+        var headerRow=physicalRow;
         var keys=headers.Select(TextKey.Normalize).ToArray();
         var rfcIndex=Array.IndexOf(keys,"RFC");
         var nameIndex=Array.FindIndex(keys,k=>k.Contains("RAZONSOCIAL")||k is "CONTRIBUYENTE" or "NOMBREDELCONTRIBUYENTE");
         if(nameIndex<0) throw new InvalidDataException("No se encontró columna de contribuyente.");
-        var row=0;
+        var rowsRead=0;
         while(!parser.EndOfData)
         {
             ct.ThrowIfCancellationRequested();
             var fields=parser.ReadFields()!;
-            row++;
+            physicalRow++;
             if(fields.All(string.IsNullOrWhiteSpace)) continue;
-            if(fields.Length!=headers.Length) throw new InvalidDataException($"Fila {row}: columnas distintas de la cabecera.");
+            if(fields.Length!=headers.Length) throw new InvalidDataException($"Fila física {physicalRow}: columnas distintas de la cabecera.");
+            rowsRead++;
+            // Keep the row exactly as published.  Validation is performed by the
+            // repository, which stores invalid RFCs in quarantine instead of
+            // discarding the complete official file.
             var rfc=Rfc.Normalize(fields[rfcIndex]);
-            if(!Rfc.IsValid(rfc)) throw new InvalidDataException($"Fila {row}: RFC inválido; carga retenida para revisión.");
             string? Get(params string[] names)
             {
                 var i=Array.FindIndex(keys,k=>names.Contains(k));
@@ -84,7 +90,7 @@ public static class SatParser
             if(listing.Article is "69-b" or "69-b-bis")
             {
                 var expected=listing.Article=="69-b" ? 20:12;
-                if(fields.Length!=expected) throw new InvalidDataException("Cambió el formato del listado completo.");
+                if(fields.Length!=expected) throw new InvalidDataException($"Fila física {physicalRow}: cambió el formato del listado completo.");
                 var names=listing.Article=="69-b" ? new[]{"presunto","desvirtuado","definitivo","sentencia-favorable"} : ["definitivo","sentencia-favorable"];
                 for(var j=0;j<names.Length;j++)
                 {
@@ -95,11 +101,11 @@ public static class SatParser
                 typed["etapas"]=stages;
             }
             var original=headers.Select((h,i)=>new OriginalCell(i+1,h,fields[i])).ToArray();
-            yield return new(0,row,rfc,fields[nameIndex].Trim(),listing.Article,listing.Slug,status,ParseDate(dateText),
-                Get("ENTIDADFEDERATIVA"),typed,original);
-            if(row%1000==0) await Task.Yield();
+            yield return new(0,physicalRow,rfc,fields[nameIndex].Trim(),listing.Article,listing.Slug,status,ParseDate(dateText),
+                Get("ENTIDADFEDERATIVA"),typed,original,headerRow);
+            if(rowsRead%1000==0) await Task.Yield();
         }
-        if(row==0) throw new InvalidDataException("CSV sin registros; se requiere verificar un vacío oficial.");
+        if(rowsRead==0) throw new InvalidDataException("CSV sin registros; se requiere verificar un vacío oficial.");
     }
     public static async IAsyncEnumerable<SourceRow> ReadWorkbookAsync(string path,[EnumeratorCancellation] CancellationToken ct=default)
     {

@@ -117,6 +117,8 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
                     logger.LogInformation("Iniciando recolección SAT.");
                     var results = await new SatCollector(downloader, repo).RunAsync(settings, ct);
                     report.Fuentes.AddRange(results);
+                    foreach (var source in results.Where(x => x.Resultado is "fallida" or "requiere-revision"))
+                        logger.LogWarning("Fuente {Source} terminó como {Result}: {Detail}", source.Fuente, source.Resultado, source.Error);
                     logger.LogInformation("SAT finalizado. Fuentes={Sources}; registros={Records}; fallidas={Failed}", results.Count, results.Sum(x => x.Registros), results.Count(x => x.Resultado == "fallida"));
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
@@ -139,7 +141,10 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                 catch (Exception ex) { logger.LogError(ex, "La recolección DOF terminó con error."); report.Fuentes.Add(new("dof:publicaciones", "fallida", 0, SafeError.Describe(ex))); }
             }
-            if (report.Fuentes.Any(r => r.Resultado is "cambios" or "sin-cambios"))
+            // A public generation is a certified snapshot.  A new file with a
+            // quarantined row, or any failed mandatory source, stays as a
+            // candidate and cannot silently mix dates with the previous snapshot.
+            if (report.Fuentes.Count > 0 && report.Fuentes.All(r => r.Resultado is "cambios" or "sin-cambios"))
             {
                 logger.LogInformation("Publicando nueva generación de datos.");
                 await repo.PublishGenerationAsync(ct);
@@ -172,7 +177,7 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
             logger.LogInformation("Resultado {Resultado}; fuentes {Fuentes}; registros {Registros}", report.Resultado, report.Fuentes.Count, report.Fuentes.Sum(f => f.Registros));
         }
     }
-    public static string Outcome(IReadOnlyList<SourceResult> rows) => rows.Any(r => r.Resultado == "fallida")
+    public static string Outcome(IReadOnlyList<SourceResult> rows) => rows.Any(r => r.Resultado is "fallida" or "requiere-revision")
         ? rows.Any(r => r.Resultado is "cambios" or "sin-cambios") ? "parcial" : "fallida"
         : rows.Any(r => r.Resultado == "cambios") ? "cambios" : "sin-cambios";
 }

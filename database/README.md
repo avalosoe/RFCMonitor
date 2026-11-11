@@ -1,6 +1,6 @@
 # Base de datos MonitorRFC
 
-SQL Server 2019 o posterior, compatibilidad 150 o superior. Los cinco scripts numerados se aplican en orden a una base **nueva elegida por el operador**. Son reejecutables y todos los objetos se crean en el esquema `dbo`; no requieren objetos de los proyectos originales.
+SQL Server 2019 o posterior, compatibilidad 150 o superior. Los scripts numerados se aplican en orden a una base **nueva elegida por el operador**. Son reejecutables y todos los objetos se crean en el esquema `dbo`; no requieren objetos de los proyectos originales.
 
 ```powershell
 sqlcmd -S SERVIDOR -d MonitorRFC -E -b -i database/001-schema.sql
@@ -8,18 +8,19 @@ sqlcmd -S SERVIDOR -d MonitorRFC -E -b -i database/002-procedures.sql
 sqlcmd -S SERVIDOR -d MonitorRFC -E -b -i database/003-operations.sql
 sqlcmd -S SERVIDOR -d MonitorRFC -E -b -i database/004-generation-metadata.sql
 sqlcmd -S SERVIDOR -d MonitorRFC -E -b -i database/005-observations.sql
+sqlcmd -S SERVIDOR -d MonitorRFC -E -b -i database/006-source-file-audit.sql
+sqlcmd -S SERVIDOR -d MonitorRFC -E -b -i database/007-remove-unused-objects.sql
+sqlcmd -S SERVIDOR -d MonitorRFC -E -b -i database/008-remove-obsolete-roles.sql
 ```
 
-Las identidades de despliegue, servicio y API son distintas. El operador crea los usuarios de su entorno y asigna `mrf_ingestor` al servicio y `mrf_api` al API. No asigne `db_owner`, `db_datawriter` ni permisos sobre esquemas al usuario del API. La identidad de despliegue necesita crear tablas/tipos/procedimientos/roles. Los scripts no crean logins ni almacenan contraseñas.
+Los scripts crean y usan únicamente objetos del esquema `dbo`; no crean roles, usuarios ni logins y no almacenan contraseñas.
 
 | Esquema | Objetos y función |
 |---|---|
 | dbo | Articulo, Fuente, DocumentoCelda; catálogo inicializado por el Worker y celdas XLS |
 | dbo | Publicacion, PublicacionVersion, RegistroFuente, ObservacionPublicacion; versiones inmutables y observaciones incluso sin cambios |
+| dbo | FilaFuente y CampoFuente; copia fiel de cada fila/columna del archivo, incluidas filas en cuarentena |
 | dbo | Ejecucion, FuenteEstado, CoberturaDof, ObjetivoCobertura, Lease, MigracionEsquema |
-| dbo | 14 tablas de detalle del artículo 69, una por listado |
-| dbo | Sat69BRegistro, Sat69BPublicacionEtapa, Sat69BBisRegistro y Sat69BBisPublicacionEtapa; todos los oficios/fechas y campos originales |
-| dbo | Fila, Detalle69, Detalle69B, Detalle69BBis, Detalle49Bis, NotaPendiente y Adjunto |
 | dbo | Generacion, GeneracionVersion, GeneracionActiva; TVP RfcInput, función FilasGeneracion y vista Vigentes |
 | dbo | Encabezado, Apariciones, Conteos, EstadoFuentes y DocumentoTecnico; procedimientos públicos parametrizados |
 

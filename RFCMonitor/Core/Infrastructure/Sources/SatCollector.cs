@@ -37,12 +37,18 @@ public sealed class SatCollector(SafeDownloader downloader,IPublicationRepositor
                     var match=Regex.Match(text,@"Información\s+actualizada\s+al\s+(\d{1,2}\s+de\s+\w+\s+de\s+\d{4})",RegexOptions.IgnoreCase);
                     if(match.Success) {date=SatParser.ParseDate(match.Groups[1].Value);break;}
                 }
+                if(date is null)
+                    throw new InvalidDataException("No se encontró una fecha de actualización válida junto al listado oficial.");
                 var download=await downloader.FetchAsync(uri.ToString(),options,ct);
                 var document=new SourceDocument(listing.Key,listing.Key,"SAT",listing.Article,listing.Slug,download.Url,
                     download.Hash,download.Path,date,"seccion",DateTimeOffset.UtcNow,"sat-v1");
                 var rows=listing.Document ? SatParser.ReadWorkbookAsync(download.Path,ct) : SatParser.ReadAsync(listing,download.Path,ct);
                 var result=await repository.ImportAsync(document,rows,ct);
-                results.Add(new(listing.Key,result.Changed?"cambios":"sin-cambios",result.Rows,null,result.VersionId));
+                var status = result.RejectedRows > 0 ? "requiere-revision" : result.Changed ? "cambios" : "sin-cambios";
+                var issue = result.RejectedRows > 0
+                    ? $"{result.RejectedRows} fila(s) rechazada(s); {result.ReviewDetail ?? "revise la cuarentena"} No se certifica esta fuente."
+                    : null;
+                results.Add(new(listing.Key,status,result.Rows,issue,result.VersionId,result.ReadRows,result.RejectedRows,result.CertifiedRows));
             }
             catch(OperationCanceledException) when(ct.IsCancellationRequested) { throw; }
             catch(Exception ex) {results.Add(new(listing.Key,"fallida",0,SafeError.Describe(ex)));}

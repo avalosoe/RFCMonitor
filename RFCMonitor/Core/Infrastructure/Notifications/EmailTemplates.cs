@@ -11,7 +11,7 @@ public static partial class EmailTemplates
         ["EjecucionId"]="Identificador de ejecución", ["Resultado"]="cambios / sin-cambios / parcial / fallida / cancelada",
         ["InicioUtc"]="Inicio UTC", ["FinUtc"]="Fin UTC", ["Duracion"]="Duración", ["Equipo"]="Equipo del servicio",
         ["FuentesTotal"]="Fuentes procesadas", ["FuentesConCambios"]="Fuentes actualizadas",
-        ["FuentesSinCambios"]="Fuentes sin novedades", ["FuentesFallidas"]="Fuentes fallidas",
+        ["FuentesSinCambios"]="Fuentes sin novedades", ["FuentesFallidas"]="Fuentes fallidas o pendientes de revisión",
         ["Registros"]="Registros procesados", ["ResumenHtml"]="Tabla HTML de resultados por fuente",
         ["ErroresHtml"]="Errores codificados HTML", ["Mensaje"]="Alias de ResumenHtml para plantilla anterior"
     };
@@ -52,8 +52,8 @@ public static partial class EmailTemplates
     {
         Validate(options);
         static string E(object? s) => WebUtility.HtmlEncode(s?.ToString() ?? "");
-        var table = "<table border=\"1\" cellpadding=\"6\"><tr><th>Fuente</th><th>Resultado</th><th>Registros</th></tr>" +
-            string.Concat(report.Fuentes.Select(f => $"<tr><td>{E(f.Fuente)}</td><td>{E(f.Resultado)}</td><td>{f.Registros}</td></tr>")) + "</table>";
+        var table = "<table border=\"1\" cellpadding=\"6\"><tr><th>Fuente</th><th>Resultado</th><th>Leídos</th><th>Aceptados</th><th>Rechazados</th><th>Vigentes certificados</th></tr>" +
+            string.Concat(report.Fuentes.Select(f => $"<tr><td>{E(f.Fuente)}</td><td>{E(f.Resultado)}</td><td>{f.Leidos ?? f.Registros}</td><td>{f.Registros}</td><td>{f.Rechazados ?? 0}</td><td>{f.RegistrosCertificados?.ToString() ?? "No disponible"}</td></tr>")) + "</table>";
         var errors = string.Concat(report.Fuentes.Where(f => f.Error is not null).Select(f => $"<p>{E(f.Fuente)}: {E(f.Error)}</p>"));
         var values = new Dictionary<string,string>
         {
@@ -62,7 +62,7 @@ public static partial class EmailTemplates
             ["Duracion"]=(report.FinUtc-report.InicioUtc).ToString("g"), ["Equipo"]=report.Equipo,
             ["FuentesTotal"]=report.Fuentes.Count.ToString(), ["FuentesConCambios"]=report.Fuentes.Count(f=>f.Resultado=="cambios").ToString(),
             ["FuentesSinCambios"]=report.Fuentes.Count(f=>f.Resultado=="sin-cambios").ToString(),
-            ["FuentesFallidas"]=report.Fuentes.Count(f=>f.Resultado=="fallida").ToString(),
+            ["FuentesFallidas"]=report.Fuentes.Count(f=>f.Resultado is "fallida" or "requiere-revision").ToString(),
             ["Registros"]=report.Fuentes.Sum(f=>f.Registros).ToString(),
             ["ResumenHtml"]=table, ["ErroresHtml"]=errors, ["Mensaje"]=table
         };
@@ -81,4 +81,3 @@ public static partial class EmailTemplates
         Fuentes=[new("SAT · 69-B","cambios",125),new("SAT · No localizados","sin-cambios",0),new("DOF","fallida",0,"Ejemplo de conexión temporalmente indisponible.")]
     };
 }
-

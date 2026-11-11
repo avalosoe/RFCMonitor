@@ -52,7 +52,8 @@ public static class EmailTemplateDefaults
 public sealed record AgentCommand(string Action);
 public sealed record AgentReply(bool Success, string Message, AgentStatus? Status = null);
 public sealed record AgentStatus(bool Running, DateTimeOffset? NextRunUtc, ExecutionReport? LastExecution, int PendingEmails, string? ConfigurationError);
-public sealed record SourceResult(string Fuente, string Resultado, long Registros, string? Error = null, long? VersionId = null);
+public sealed record SourceResult(string Fuente, string Resultado, long Registros, string? Error = null, long? VersionId = null,
+    long? Leidos = null, long? Rechazados = null, long? RegistrosCertificados = null);
 public sealed class ExecutionReport
 {
     public Guid EjecucionId { get; set; } = Guid.NewGuid();

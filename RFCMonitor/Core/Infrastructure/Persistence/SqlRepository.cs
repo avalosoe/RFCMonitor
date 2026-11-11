@@ -96,7 +96,7 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
         {
             await AssertLeaseAsync(transaction,ct);
             using var find = Command(c,"""
-                SELECT p.PublicacionId,v.VersionId,v.HashContenido,v.ParserVersion,v.Filas
+                SELECT p.PublicacionId,v.VersionId,v.HashContenido,v.ParserVersion,v.Filas,v.FilasLeidas,v.FilasRechazadas
                 FROM dbo.Publicacion p WITH(UPDLOCK,HOLDLOCK)
                 LEFT JOIN dbo.PublicacionVersion v ON v.VersionId=p.VersionActivaId
                 WHERE p.FuenteKey=@Source AND p.ClaveExterna=@External;
@@ -111,8 +111,9 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                     // Compare only the active version: A -> B -> A creates a new immutable revision.
                     if(!r.IsDBNull(1) && r.GetString(2)==document.Hash && r.GetString(3)==document.ParserVersion)
                     {
-                        var unchanged = new ImportResult(r.GetInt64(1),false,r.GetInt64(4));
                         await r.DisposeAsync();
+                        var unchanged = new ImportResult(r.GetInt64(1),false,r.GetInt64(4),r.GetInt64(5),r.GetInt64(6),
+                            await CertifiedRowsAsync(c,transaction,publication,ct));
                         await ObserveAsync(c,transaction,unchanged.VersionId,document,true,ct);
                         await transaction.CommitAsync(ct); return unchanged;
                     }
@@ -135,7 +136,10 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
             var version=Convert.ToInt64(await create.ExecuteScalarAsync(ct));
             var isDocument=listing?.Document == true;
             using var batch=CreateBatch(isDocument);
-            long count=0;
+            using var rawRows=CreateRawRowsBatch();
+            using var rawFields=CreateRawFieldsBatch();
+            long count=0, read=0, rejected=0;
+            string? reviewDetail=null;
             await foreach(var row in rows.WithCancellation(ct))
             {
                 if(isDocument)
@@ -149,27 +153,43 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                 }
                 else
                 {
-                    if(!Rfc.IsValid(row.Rfc) || !SourceCatalog.Articles.Contains(row.Article)) throw new InvalidDataException("RFC o artículo inválido.");
-                    if(listing is not null && (row.Article!=listing.Article || row.Listing!=listing.Slug)) throw new InvalidDataException("Fila fuera de su fuente.");
+                    read++;
+                    var rfcValid=Rfc.IsValid(row.Rfc);
+                    var sourceValid=SourceCatalog.Articles.Contains(row.Article) && (listing is null || (row.Article==listing.Article && row.Listing==listing.Slug));
+                    var valid=rfcValid && sourceValid;
+                    var reason=!rfcValid ? "RFC inválido." : !sourceValid ? "Fila fuera de su fuente." : null;
+                    rawRows.Rows.Add(version,row.Table,row.Row,(object?)row.Rfc??DBNull.Value,valid,(object?)reason??DBNull.Value);
+                    foreach(var cell in row.Original)
+                        rawFields.Rows.Add(version,row.Table,row.Row,cell.Columna,cell.Nombre,(object?)cell.Valor??DBNull.Value);
+                    if(rawRows.Rows.Count>=1000) await FlushAsync(c,transaction,rawRows,"dbo.FilaFuente",ct);
+                    if(rawFields.Rows.Count>=5000) await FlushAsync(c,transaction,rawFields,"dbo.CampoFuente",ct);
+                    if(!valid) { rejected++; reviewDetail ??= $"Fila física {row.Row}: {reason}"; continue; }
                     var detail=JsonSerializer.Serialize(new {tipo=document.Origin+":"+row.Article+":"+row.Listing,tipado=row.Typed,camposOriginales=row.Original},Json);
-                    batch.Rows.Add(version,row.Table,row.Row,Rfc.Normalize(row.Rfc),row.Name,row.Article,row.Listing,row.Status,
+                    batch.Rows.Add(version,row.Table,row.Row,Rfc.Normalize(row.Rfc!),row.Name,row.Article,row.Listing,row.Status,
                         row.PublicationDate is { } date ? date.ToDateTime(TimeOnly.MinValue):DBNull.Value,(object?)row.Entity??DBNull.Value,detail);
                     count++;
                     if(batch.Rows.Count>=1000) await FlushAsync(c,transaction,batch,"dbo.RegistroFuente",ct);
                 }
             }
             await FlushAsync(c,transaction,batch,isDocument?"dbo.DocumentoCelda":"dbo.RegistroFuente",ct);
-            if(count==0) throw new InvalidDataException("La publicación no contiene filas verificables.");
-            if(!isDocument) await InsertTypedAsync(c,transaction,version,listing,document.NoteCode,ct);
+            await FlushAsync(c,transaction,rawRows,"dbo.FilaFuente",ct);
+            await FlushAsync(c,transaction,rawFields,"dbo.CampoFuente",ct);
+            if((isDocument ? count : read)==0) throw new InvalidDataException("La publicación no contiene filas verificables.");
+            // RegistroFuente plus FilaFuente/CampoFuente are the canonical
+            // storage for all CSV and DOF rows.  The former source-specific
+            // detail tables are intentionally no longer populated.
             using var promote=Command(c,"""
-                UPDATE dbo.PublicacionVersion SET Estado='publicada',Filas=@Rows,IncorporadaUtc=SYSUTCDATETIME() WHERE VersionId=@Version;
+                UPDATE dbo.PublicacionVersion SET Estado='publicada',Filas=@Rows,FilasLeidas=@Read,FilasRechazadas=@Rejected,
+                    Certificacion=CASE WHEN @Rejected=0 THEN 'certificada' ELSE 'requiere-revision' END,
+                    IncorporadaUtc=SYSUTCDATETIME() WHERE VersionId=@Version;
                 UPDATE dbo.Publicacion SET VersionActivaId=@Version WHERE PublicacionId=@Publication;
                 """,transaction);
-            P(promote,"@Rows",SqlDbType.BigInt,count); P(promote,"@Version",SqlDbType.BigInt,version); P(promote,"@Publication",SqlDbType.BigInt,publication);
+            P(promote,"@Rows",SqlDbType.BigInt,count); P(promote,"@Read",SqlDbType.BigInt,isDocument?count:read); P(promote,"@Rejected",SqlDbType.BigInt,rejected);
+            P(promote,"@Version",SqlDbType.BigInt,version); P(promote,"@Publication",SqlDbType.BigInt,publication);
             await promote.ExecuteNonQueryAsync(ct);
             await ObserveAsync(c,transaction,version,document,false,ct);
             await transaction.CommitAsync(ct);
-            return new(version,true,count);
+            return new(version,true,count,isDocument?count:read,rejected,await CertifiedRowsAsync(c,transaction,publication,ct),reviewDetail);
         }
         catch { try { await transaction.RollbackAsync(CancellationToken.None); } catch(SqlException) { } throw; }
     }
@@ -186,6 +206,31 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
             foreach(var name in new[]{"Rfc","NombreOriginal","Articulo","Listado","EstadoOriginal"})t.Columns.Add(name,typeof(string));
             t.Columns.Add("FechaPublicacion",typeof(DateTime)); t.Columns.Add("EntidadOriginal",typeof(string)); t.Columns.Add("DetalleJson",typeof(string));
         }
+        return t;
+    }
+    private static async Task<long> CertifiedRowsAsync(SqlConnection c, SqlTransaction transaction, long publication, CancellationToken ct)
+    {
+        using var cmd=Command(c,"""
+            SELECT TOP(1) Filas FROM dbo.PublicacionVersion
+            WHERE PublicacionId=@Publication AND Certificacion='certificada' AND Estado='publicada'
+            ORDER BY VersionId DESC;
+            """,transaction);
+        P(cmd,"@Publication",SqlDbType.BigInt,publication);
+        var value=await cmd.ExecuteScalarAsync(ct);
+        return value is null or DBNull ? 0 : Convert.ToInt64(value);
+    }
+    private static DataTable CreateRawRowsBatch()
+    {
+        var t=new DataTable();
+        t.Columns.Add("VersionId",typeof(long)); t.Columns.Add("TablaOrdinal",typeof(int)); t.Columns.Add("FilaOrdinal",typeof(int));
+        t.Columns.Add("RfcOriginal",typeof(string)); t.Columns.Add("EsValida",typeof(bool)); t.Columns.Add("MotivoRechazo",typeof(string));
+        return t;
+    }
+    private static DataTable CreateRawFieldsBatch()
+    {
+        var t=new DataTable();
+        t.Columns.Add("VersionId",typeof(long)); t.Columns.Add("TablaOrdinal",typeof(int)); t.Columns.Add("FilaOrdinal",typeof(int));
+        t.Columns.Add("ColumnaOrdinal",typeof(int)); t.Columns.Add("NombreOriginal",typeof(string)); t.Columns.Add("ValorOriginal",typeof(string));
         return t;
     }
     private static async Task ObserveAsync(SqlConnection c, SqlTransaction tx, long version, SourceDocument document, bool unchanged, CancellationToken ct)
@@ -205,37 +250,6 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
         using var bulk=new SqlBulkCopy(c,SqlBulkCopyOptions.CheckConstraints,tx) { DestinationTableName=table,BatchSize=1000,BulkCopyTimeout=300,EnableStreaming=true };
         foreach(DataColumn col in batch.Columns) bulk.ColumnMappings.Add(col.ColumnName,col.ColumnName);
         await bulk.WriteToServerAsync(batch,ct); batch.Clear();
-    }
-    private static async Task InsertTypedAsync(SqlConnection c,SqlTransaction tx,long version,Listing? listing,long? note,CancellationToken ct)
-    {
-        // Identifiers below are exclusively internal catalog constants, never request or downloaded input.
-        string sql;
-        if(listing?.Article=="69")
-        {
-            var fields=new (string Name,string Type)[]{("TipoPersona","nvarchar(100)"),("Supuesto","nvarchar(1000)"),("FechaPrimeraPublicacion","date"),("FechaPublicacion","date"),("FechaCancelacion","date"),("FechaAutorizacion","date"),("FechaPublicacionTransparencia","date"),("Monto","decimal(28,4)"),("Ejercicio","nvarchar(100)"),("Periodo","nvarchar(200)"),("Motivo","nvarchar(1000)"),("AdministracionResponsable","nvarchar(500)"),("EntidadFederativa","nvarchar(500)")};
-            sql=$"INSERT {listing.Table}(RegistroId,{string.Join(',',fields.Select(f=>f.Name))}) SELECT r.RegistroId,{string.Join(',',fields.Select(f=>"d."+f.Name))} FROM dbo.RegistroFuente r CROSS APPLY OPENJSON(r.DetalleJson,'$.tipado') WITH({string.Join(',',fields.Select(f=>$"{f.Name} {f.Type} '$.{char.ToLowerInvariant(f.Name[0])+f.Name[1..]}'"))}) d WHERE r.VersionId=@Version;";
-        }
-        else if(listing is not null)
-        {
-            var registro = listing.Article == "69-b" ? "dbo.Sat69BRegistro" : "dbo.Sat69BBisRegistro";
-            var etapa = listing.Article == "69-b" ? "dbo.Sat69BPublicacionEtapa" : "dbo.Sat69BBisPublicacionEtapa";
-            sql=$"""
-                INSERT {registro}(RegistroId,NumeroOriginal,SituacionOriginal)
-                SELECT RegistroId,JSON_VALUE(DetalleJson,'$.tipado.numeroOriginal'),EstadoOriginal FROM dbo.RegistroFuente WHERE VersionId=@Version;
-                INSERT {etapa}(RegistroId,EtapaClave,OficioSat,FechaSat,FechaSatOriginal,OficioDof,FechaDof,FechaDofOriginal)
-                SELECT r.RegistroId,d.etapa,d.oficioSat,d.fechaSat,d.fechaSatOriginal,d.oficioDof,d.fechaDof,d.fechaDofOriginal
-                FROM dbo.RegistroFuente r CROSS APPLY OPENJSON(r.DetalleJson,'$.tipado.etapas') WITH(
-                etapa varchar(30),oficioSat nvarchar(max),fechaSat date,fechaSatOriginal nvarchar(200),oficioDof nvarchar(max),fechaDof date,fechaDofOriginal nvarchar(200)) d WHERE r.VersionId=@Version;
-                """;
-        }
-        else
-        {
-            if(note is null)throw new InvalidDataException("Una fila DOF requiere código de nota.");
-            sql="INSERT dbo.Fila(RegistroId,CodNota,ContextoJson) SELECT RegistroId,@Note,JSON_QUERY(DetalleJson,'$.tipado') FROM dbo.RegistroFuente WHERE VersionId=@Version;";
-            foreach(var (article,table) in new[]{("69","Detalle69"),("69-b","Detalle69B"),("69-b-bis","Detalle69BBis"),("49-bis","Detalle49Bis")})
-                sql+=$"INSERT dbo.{table}(RegistroId,NumeroOficio,FechaPublicacion,EvidenciaClasificacion) SELECT r.RegistroId,d.numeroOficio,r.FechaPublicacion,COALESCE(d.evidenciaClasificacion,N'') FROM dbo.RegistroFuente r CROSS APPLY OPENJSON(r.DetalleJson,'$.tipado') WITH(numeroOficio nvarchar(500),evidenciaClasificacion nvarchar(max)) d WHERE r.VersionId=@Version AND r.Articulo='{article}';";
-        }
-        using var cmd=Command(c,sql,tx); P(cmd,"@Version",SqlDbType.BigInt,version); P(cmd,"@Note",SqlDbType.BigInt,note); await cmd.ExecuteNonQueryAsync(ct);
     }
     public async Task<long> PublishGenerationAsync(CancellationToken ct)
     {

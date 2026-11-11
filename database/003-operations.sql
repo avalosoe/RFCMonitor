@@ -20,9 +20,5 @@ BEGIN
  ORDER BY c.VersionId,c.HojaOrdinal,c.FilaOrdinal,c.ColumnaOrdinal;
 END;
 GO
-GRANT EXECUTE ON OBJECT::dbo.EstadoFuentes TO mrf_api;
-GRANT EXECUTE ON OBJECT::dbo.DocumentoTecnico TO mrf_api;
-GRANT EXECUTE ON OBJECT::dbo.EstadoFuentes TO mrf_ingestor;
-GO
 IF NOT EXISTS(SELECT 1 FROM dbo.MigracionEsquema WHERE Version=3) INSERT dbo.MigracionEsquema(Version) VALUES(3);
 GO

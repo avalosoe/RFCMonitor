@@ -5,8 +5,6 @@ GO
 IF OBJECT_ID(N'dbo.ObjetivoCobertura',N'U') IS NULL
  CREATE TABLE dbo.ObjetivoCobertura(Id tinyint PRIMARY KEY CHECK(Id=1),DofDesde date NOT NULL,DofHasta date NOT NULL,DofHabilitado bit NOT NULL);
 GO
-GRANT SELECT,INSERT,UPDATE ON OBJECT::dbo.ObjetivoCobertura TO mrf_ingestor;
-GO
 CREATE OR ALTER FUNCTION dbo.FilasGeneracion(@GeneracionId bigint,@Historico bit)
 RETURNS TABLE AS RETURN
  SELECT r.*,gv.EsActiva,p.FuenteKey,f.Origen,v.CodNota,v.Url

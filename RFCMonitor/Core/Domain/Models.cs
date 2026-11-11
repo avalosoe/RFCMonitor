@@ -4,17 +4,20 @@ using System.Text.RegularExpressions;
 
 namespace MonitorRFC.Domain;
 
-public sealed record Listing(string Key, string Article, string Slug, string Name, string RelativeUrl, string Table, bool Document = false)
+public sealed record Listing(string Key, string Article, string Slug, string Name, string RelativeUrl, bool Document = false)
 {
     public string Url => "https://wu1agsprosta001.blob.core.windows.net/agsc-publicaciones/Datos_abiertos/" + RelativeUrl;
 }
 public sealed record OriginalCell(int Columna, string Nombre, string? Valor);
 public sealed record SourceRow(int Table, int Row, string Rfc, string Name, string Article, string Listing, string Status,
-    DateOnly? PublicationDate, string? Entity, Dictionary<string, object?> Typed, IReadOnlyList<OriginalCell> Original);
+    DateOnly? PublicationDate, string? Entity, Dictionary<string, object?> Typed, IReadOnlyList<OriginalCell> Original,
+    int HeaderRow = 0);
 public sealed record SourceDocument(string SourceKey, string ExternalKey, string Origin, string Article, string Listing,
     string Url, string Hash, string EvidencePath, DateOnly? SourceDate, string DateScope, DateTimeOffset DetectedUtc,
     string ParserVersion, long? NoteCode = null, string? Title = null, string? Edition = null, string? Agency = null);
-public sealed record ImportResult(long VersionId, bool Changed, long Rows);
+/// <summary>Result of one immutable source-file import. Rows are the accepted rows exposed to the API.</summary>
+public sealed record ImportResult(long VersionId, bool Changed, long Rows, long ReadRows = 0, long RejectedRows = 0,
+    long CertifiedRows = 0, string? ReviewDetail = null);
 public sealed record QueryFilter(string? Article = null, string? Listing = null, bool IncludeHistory = false);
 public sealed record Appearance(long Id, long VersionId, string SourceId, string Origin, string Article, string Listing,
     string Rfc, string Name, string Status, DateOnly? PublicationDate, bool Historical, long? NoteCode, string Url,
@@ -47,4 +50,3 @@ public static class TextKey
     public static string Normalize(string text) => string.Concat(text.Normalize(NormalizationForm.FormD)
         .Where(c => CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.NonSpacingMark && char.IsLetterOrDigit(c))).ToUpperInvariant();
 }
-

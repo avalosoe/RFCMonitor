@@ -4,8 +4,6 @@ IF OBJECT_ID(N'dbo.ObservacionPublicacion',N'U') IS NULL
  ObservadaUtc datetime2(3) NOT NULL,FechaFuente date NULL,AlcanceFecha varchar(30) NOT NULL,
  Url nvarchar(2048) NOT NULL,SinCambios bit NOT NULL);
 GO
-GRANT SELECT,INSERT,UPDATE ON OBJECT::dbo.ObservacionPublicacion TO mrf_ingestor;
-GO
 IF NOT EXISTS(SELECT 1 FROM sys.indexes WHERE object_id=OBJECT_ID(N'dbo.ObservacionPublicacion') AND name='IX_mrf_ObservacionVersion')
  CREATE INDEX IX_mrf_ObservacionVersion ON dbo.ObservacionPublicacion(VersionId,ObservadaUtc DESC);
 GO

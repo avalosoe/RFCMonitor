@@ -19,13 +19,19 @@ public sealed class RfcsController(IRfcQueryService queries, SqlRepository repos
     [HttpGet("api/EdosEfos/all69")]
     public Task<IActionResult> All(bool incluirHistorial = false, CancellationToken ct = default) => Query(null, null, null, incluirHistorial, ct);
     [HttpPost("api/v1/rfcs/consultar")]
-    public Task<IActionResult> Selected([FromBody] string?[]? rfcs, bool incluirHistorial = false, CancellationToken ct = default) => Query(rfcs, null, null, incluirHistorial, ct, true);
+    public Task<IActionResult> Selected([FromBody] string?[]? rfcs, string? articulo = null, string? listado = null,
+        bool incluirHistorial = false, CancellationToken ct = default) => Query(rfcs, articulo, listado, incluirHistorial, ct, true);
     public sealed record LegacyInput(string?[]? Rfcs);
     [HttpPost("api/Rfc/Listado69")]
     public Task<IActionResult> Legacy([FromBody] LegacyInput? request, bool incluirHistorial = false, CancellationToken ct = default) => Query(request?.Rfcs, null, null, incluirHistorial, ct, true);
     [HttpGet("api/v1/articulos/{articulo}/contribuyentes")]
     [HttpGet("api/v1/articulos/{articulo}/listados/{listado}/contribuyentes")]
     public Task<IActionResult> ByArticle(string articulo, string? listado = null, bool incluirHistorial = false, CancellationToken ct = default) => Query(null, articulo, listado, incluirHistorial, ct);
+    [HttpGet("api/v1/rfcs/{rfc}/estatus")]
+    public Task<IActionResult> CurrentStatus(string rfc, CancellationToken ct = default) => Query([rfc], null, null, false, ct, true);
+    [HttpGet("api/v1/rfcs/{rfc}/historial")]
+    public Task<IActionResult> History(string rfc, string? articulo = null, string? listado = null, CancellationToken ct = default) =>
+        Query([rfc], articulo, listado, true, ct, true);
     [HttpGet("api/v1/articulos/{articulo}/listados")]
     public IActionResult Listings(string articulo)
     {
