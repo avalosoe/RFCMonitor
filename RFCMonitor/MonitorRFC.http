@@ -1,0 +1,6 @@
+@MonitorRFC_HostAddress = http://localhost:5224
+
+GET {{MonitorRFC_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

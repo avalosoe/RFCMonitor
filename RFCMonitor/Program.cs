@@ -1,23 +1,44 @@
+using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.RateLimiting;
+using MonitorRFC.Application;
+using MonitorRFC.Infrastructure.Persistence;
+
 var builder = WebApplication.CreateBuilder(args);
-
-// Add services to the container.
-
 builder.Services.AddControllers();
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
-
-var app = builder.Build();
-
-// Configure the HTTP request pipeline.
-if (app.Environment.IsDevelopment())
+builder.Services.AddProblemDetails();
+builder.Services.AddResponseCompression(o => o.EnableForHttps = true);
+builder.Services.AddSingleton<IClock, SystemClock>();
+builder.Services.AddScoped<SqlRepository>(_ => new SqlRepository(builder.Configuration.GetConnectionString("MonitorRFC") ?? ""));
+builder.Services.AddScoped<IRfcQueryService>(s => s.GetRequiredService<SqlRepository>());
+builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = 8 * 1024 * 1024);
+builder.Services.AddRateLimiter(o =>
 {
-    app.MapOpenApi();
-}
-
-app.UseHttpsRedirection();
-
-app.UseAuthorization();
-
-app.MapControllers();
-
+    o.RejectionStatusCode = 429;
+    o.AddConcurrencyLimiter("consultas", limiter =>
+    {
+        limiter.PermitLimit = Math.Max(1, builder.Configuration.GetValue("Api:ConcurrentQueries", 4));
+        limiter.QueueLimit = 0;
+    });
+    o.OnRejected = async (context, ct) =>
+    {
+        context.HttpContext.Response.Headers.RetryAfter = "5";
+        await Results.Problem(statusCode: 429, title: "Consultas simultáneas excedidas; reintente.").ExecuteAsync(context.HttpContext);
+    };
+});
+var app = builder.Build();
+app.UseExceptionHandler(error => error.Run(async context =>
+{
+    var exception = context.Features.Get<IExceptionHandlerFeature>()?.Error;
+    app.Logger.LogError("Consulta fallida {TraceId}: {ErrorType}", context.TraceIdentifier, exception?.GetType().Name);
+    var status = exception is BadHttpRequestException bad ? bad.StatusCode : 503;
+    await Results.Problem(statusCode: status, title: status == 413 ? "Cuerpo demasiado grande." : "No se pudo completar la consulta.",
+        extensions: new Dictionary<string, object?> { ["traceId"] = context.TraceIdentifier }).ExecuteAsync(context);
+}));
+app.UseResponseCompression();
+app.UseRateLimiter();
+if (app.Environment.IsDevelopment()) app.MapOpenApi();
+app.MapGet("/", () => Results.Ok(new { servicio = "MonitorRFC", estado = "online" }));
+app.MapControllers().RequireRateLimiting("consultas");
 app.Run();
+public partial class Program { }
