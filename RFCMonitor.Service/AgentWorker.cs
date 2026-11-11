@@ -117,7 +117,7 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
                     logger.LogInformation("Iniciando recolección SAT.");
                     var results = await new SatCollector(downloader, repo).RunAsync(settings, ct);
                     report.Fuentes.AddRange(results);
-                    foreach (var source in results.Where(x => x.Resultado is "fallida" or "requiere-revision"))
+                    foreach (var source in results.Where(x => x.Resultado is "fallida" or "requiere-revision" || (x.Rechazados ?? 0) > 0))
                         logger.LogWarning("Fuente {Source} terminó como {Result}: {Detail}", source.Fuente, source.Resultado, source.Error);
                     logger.LogInformation("SAT finalizado. Fuentes={Sources}; registros={Records}; fallidas={Failed}", results.Count, results.Sum(x => x.Registros), results.Count(x => x.Resultado == "fallida"));
                 }

@@ -137,7 +137,6 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
             var isDocument=listing?.Document == true;
             using var batch=CreateBatch(isDocument);
             using var rawRows=CreateRawRowsBatch();
-            using var rawFields=CreateRawFieldsBatch();
             long count=0, read=0, rejected=0;
             string? reviewDetail=null;
             await foreach(var row in rows.WithCancellation(ct))
@@ -156,14 +155,14 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                     read++;
                     var rfcValid=Rfc.IsValid(row.Rfc);
                     var sourceValid=SourceCatalog.Articles.Contains(row.Article) && (listing is null || (row.Article==listing.Article && row.Listing==listing.Slug));
+                    var rawRfc=row.Original.FirstOrDefault(cell=>TextKey.Normalize(cell.Nombre)=="RFC")?.Valor ?? row.Rfc;
                     var valid=rfcValid && sourceValid;
-                    var reason=!rfcValid ? "RFC inválido." : !sourceValid ? "Fila fuera de su fuente." : null;
-                    rawRows.Rows.Add(version,row.Table,row.Row,(object?)row.Rfc??DBNull.Value,valid,(object?)reason??DBNull.Value);
-                    foreach(var cell in row.Original)
-                        rawFields.Rows.Add(version,row.Table,row.Row,cell.Columna,cell.Nombre,(object?)cell.Valor??DBNull.Value);
+                    var reason=!rfcValid ? $"RFC no consultable: {rawRfc}" : !sourceValid ? "Fila fuera de su fuente." : null;
+                    rawRows.Rows.Add(version,row.Table,row.Row,(object?)rawRfc??DBNull.Value,valid,(object?)reason??DBNull.Value,
+                        JsonSerializer.Serialize(row.Original,Json));
                     if(rawRows.Rows.Count>=1000) await FlushAsync(c,transaction,rawRows,"dbo.FilaFuente",ct);
-                    if(rawFields.Rows.Count>=5000) await FlushAsync(c,transaction,rawFields,"dbo.CampoFuente",ct);
-                    if(!valid) { rejected++; reviewDetail ??= $"Fila física {row.Row}: {reason}"; continue; }
+                    if(!sourceValid) throw new InvalidDataException($"Fila física {row.Row}: fila fuera de su fuente.");
+                    if(!rfcValid) { rejected++; reviewDetail ??= $"Fila física {row.Row}: {reason}"; continue; }
                     var detail=JsonSerializer.Serialize(new {tipo=document.Origin+":"+row.Article+":"+row.Listing,tipado=row.Typed,camposOriginales=row.Original},Json);
                     batch.Rows.Add(version,row.Table,row.Row,Rfc.Normalize(row.Rfc!),row.Name,row.Article,row.Listing,row.Status,
                         row.PublicationDate is { } date ? date.ToDateTime(TimeOnly.MinValue):DBNull.Value,(object?)row.Entity??DBNull.Value,detail);
@@ -173,14 +172,12 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
             }
             await FlushAsync(c,transaction,batch,isDocument?"dbo.DocumentoCelda":"dbo.RegistroFuente",ct);
             await FlushAsync(c,transaction,rawRows,"dbo.FilaFuente",ct);
-            await FlushAsync(c,transaction,rawFields,"dbo.CampoFuente",ct);
             if((isDocument ? count : read)==0) throw new InvalidDataException("La publicación no contiene filas verificables.");
-            // RegistroFuente plus FilaFuente/CampoFuente are the canonical
-            // storage for all CSV and DOF rows.  The former source-specific
-            // detail tables are intentionally no longer populated.
+            // FilaFuente preserves every source row, including rejected rows.
+            // RegistroFuente is the consolidated RFC projection for valid rows.
             using var promote=Command(c,"""
                 UPDATE dbo.PublicacionVersion SET Estado='publicada',Filas=@Rows,FilasLeidas=@Read,FilasRechazadas=@Rejected,
-                    Certificacion=CASE WHEN @Rejected=0 THEN 'certificada' ELSE 'requiere-revision' END,
+                    Certificacion='certificada',
                     IncorporadaUtc=SYSUTCDATETIME() WHERE VersionId=@Version;
                 UPDATE dbo.Publicacion SET VersionActivaId=@Version WHERE PublicacionId=@Publication;
                 """,transaction);
@@ -188,8 +185,9 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
             P(promote,"@Version",SqlDbType.BigInt,version); P(promote,"@Publication",SqlDbType.BigInt,publication);
             await promote.ExecuteNonQueryAsync(ct);
             await ObserveAsync(c,transaction,version,document,false,ct);
+            var certifiedRows=await CertifiedRowsAsync(c,transaction,publication,ct);
             await transaction.CommitAsync(ct);
-            return new(version,true,count,isDocument?count:read,rejected,await CertifiedRowsAsync(c,transaction,publication,ct),reviewDetail);
+            return new(version,true,count,isDocument?count:read,rejected,certifiedRows,reviewDetail);
         }
         catch { try { await transaction.RollbackAsync(CancellationToken.None); } catch(SqlException) { } throw; }
     }
@@ -223,14 +221,7 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
     {
         var t=new DataTable();
         t.Columns.Add("VersionId",typeof(long)); t.Columns.Add("TablaOrdinal",typeof(int)); t.Columns.Add("FilaOrdinal",typeof(int));
-        t.Columns.Add("RfcOriginal",typeof(string)); t.Columns.Add("EsValida",typeof(bool)); t.Columns.Add("MotivoRechazo",typeof(string));
-        return t;
-    }
-    private static DataTable CreateRawFieldsBatch()
-    {
-        var t=new DataTable();
-        t.Columns.Add("VersionId",typeof(long)); t.Columns.Add("TablaOrdinal",typeof(int)); t.Columns.Add("FilaOrdinal",typeof(int));
-        t.Columns.Add("ColumnaOrdinal",typeof(int)); t.Columns.Add("NombreOriginal",typeof(string)); t.Columns.Add("ValorOriginal",typeof(string));
+        t.Columns.Add("RfcOriginal",typeof(string)); t.Columns.Add("EsValida",typeof(bool)); t.Columns.Add("MotivoRechazo",typeof(string)); t.Columns.Add("DatosOriginalesJson",typeof(string));
         return t;
     }
     private static async Task ObserveAsync(SqlConnection c, SqlTransaction tx, long version, SourceDocument document, bool unchanged, CancellationToken ct)

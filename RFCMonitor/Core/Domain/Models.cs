@@ -28,7 +28,16 @@ public static partial class Rfc
 {
     [GeneratedRegex(@"^[A-Z&Ñ]{3,4}[0-9]{6}[A-Z0-9]{3}$", RegexOptions.CultureInvariant)]
     private static partial Regex Pattern();
-    public static string Normalize(string value) => value.Trim().ToUpperInvariant();
+    public static string Normalize(string value)
+    {
+        var result=new StringBuilder();
+        foreach(var character in value.Normalize(NormalizationForm.FormC).Trim().Trim('\uFEFF'))
+        {
+            if(char.IsWhiteSpace(character) || character is '"' or '\'' or '´' or '`' or '‘' or '’' or '‚' or '‛' or '“' or '”' or '„' or '‟') continue;
+            result.Append(character=='¥' ? 'Ñ' : character);
+        }
+        return result.ToString().ToUpperInvariant();
+    }
     public static bool IsValid(string? value) => value is not null && Pattern().IsMatch(Normalize(value));
     public static string[] ValidateMany(IEnumerable<string?>? values)
     {

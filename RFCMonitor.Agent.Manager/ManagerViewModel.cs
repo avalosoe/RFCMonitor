@@ -63,6 +63,7 @@ public sealed class ManagerViewModel : INotifyPropertyChanged
     public string Results { get; set; }
     public string ServiceStatus { get; private set; } = "Consultando…";
     public bool CanInstall { get; private set; }
+    public bool CanUpdate { get; private set; }
     public bool CanUninstall { get; private set; }
     public bool CanStart { get; private set; }
     public bool CanStop { get; private set; }
@@ -116,12 +117,14 @@ public sealed class ManagerViewModel : INotifyPropertyChanged
         var installed = ServiceStatus != "No instalado";
         var running = ServiceStatus == "Running";
         CanInstall = !installed;
+        CanUpdate = installed;
         CanUninstall = installed;
         CanStart = installed && !running;
         CanStop = installed && running;
         CanRestart = installed;
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ServiceStatus)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CanInstall)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CanUpdate)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CanUninstall)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CanStart)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CanStop)));
@@ -219,7 +222,7 @@ public sealed class ManagerViewModel : INotifyPropertyChanged
                     Message = "Ruta del servicio actualizada.";
                     PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ServicePath)));
                     break;
-                case "install": case "uninstall": case "start": case "stop": case "restart":
+                case "install": case "update": case "uninstall": case "start": case "stop": case "restart":
                     Message = await Task.Run(() => ServiceAdministration.Execute(command, ServicePath)); RefreshServiceState(); break;
                 case "status":
                     RefreshServiceState();

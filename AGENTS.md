@@ -69,7 +69,9 @@ A continuación se documenta el catálogo completo de endpoints expuestos por la
 | Método | Ruta | Descripción | Parámetros / Body |
 | :--- | :--- | :--- | :--- |
 | `GET` | `/api/v1/rfcs` | Consulta consolidada de todos los RFCs y sus apariciones publicadas mediante streaming JSON de alta eficiencia. | Query opcional: `incluirHistorial` (bool, default `false`). |
-| `POST` | `/api/v1/rfcs/consultar` | Consulta masiva filtrada para una lista específica de RFCs. | Query opcional: `incluirHistorial` (bool).<br>Body JSON: Array de strings `["RFC1", "RFC2"]`. |
+| `POST` | `/api/v1/rfcs/consultar` | Consulta masiva consolidada, con filtro opcional por artículo/listado. | Query opcional: `articulo`, `listado`, `incluirHistorial` (bool).<br>Body JSON: Array de strings `["RFC1", "RFC2"]`. |
+| `GET` | `/api/v1/rfcs/{rfc}/estatus` | Consulta vigente de un RFC en todos los artículos y fuentes publicadas. | Path: `rfc`. |
+| `GET` | `/api/v1/rfcs/{rfc}/historial` | Consulta todas las apariciones históricas SAT y DOF de un RFC. | Path: `rfc`.<br>Query opcional: `articulo`, `listado`. |
 | `GET` | `/api/v1/articulos/{articulo}/contribuyentes` | Consulta de contribuyentes asociados exclusivamente a un artículo específico. | Path: `articulo`.<br>Query opcional: `incluirHistorial` (bool). |
 | `GET` | `/api/v1/articulos/{articulo}/listados/{listado}/contribuyentes` | Consulta de contribuyentes filtrando por artículo y listado concreto (ej. `definitivos`, `presuntos`, etc.). | Path: `articulo`, `listado`.<br>Query opcional: `incluirHistorial` (bool). |
 

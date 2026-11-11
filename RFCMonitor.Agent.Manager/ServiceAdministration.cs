@@ -44,6 +44,20 @@ public static class ServiceAdministration
             if (!DeleteService(service)) throw new Win32Exception(Marshal.GetLastWin32Error());
             return "Servicio desinstalado; datos, evidencia y configuración conservados.";
         }
+        if (action == "update")
+        {
+            if (Status() == "No instalado") return "El servicio no está instalado.";
+            binary = Path.GetFullPath(binary);
+            if (!File.Exists(binary) || !string.Equals(Path.GetExtension(binary), ".exe", StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("Seleccione el archivo .exe publicado que ejecuta el servicio.");
+            var sourceDirectory = Path.GetDirectoryName(binary)!;
+            if (string.Equals(Path.GetFullPath(sourceDirectory).TrimEnd(Path.DirectorySeparatorChar), InstallDirectory.TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("Seleccione una publicación externa; el ejecutable instalado no puede actualizarse a sí mismo.");
+            Execute("stop", binary);
+            CopyPublication(sourceDirectory, InstallDirectory);
+            Execute("start", binary);
+            return "Publicación actualizada y servicio reiniciado.";
+        }
         using var controller = new ServiceController(Name);
         if (action is "stop" or "restart")
         {
