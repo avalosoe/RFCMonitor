@@ -9,6 +9,13 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RFCMonitor.Service", "RFCMo
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RFCMonitor.Agent.Manager", "RFCMonitor.Agent.Manager\RFCMonitor.Agent.Manager.csproj", "{1AC9CBD3-10A7-46D4-BC7C-37DC96AABFCE}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "database", "database", "{8FCDFB5A-155F-4BC0-BBEF-FFD43E0E43DF}"
+	ProjectSection(SolutionItems) = preProject
+		database\bootstrap.sql = database\bootstrap.sql
+		database\README.md = database\README.md
+		database\reset.sql = database\reset.sql
+	EndProjectSection
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU

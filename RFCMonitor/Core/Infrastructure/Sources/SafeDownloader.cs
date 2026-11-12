@@ -107,7 +107,7 @@ public sealed class SafeDownloader : IDisposable
                 var result = new Download(target,digest,uri.ToString(),response.Headers.ETag?.Tag,response.Content.Headers.LastModified,total);
                 var urlKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(url)))[..16];
                 Configuration.AgentConfiguration.AtomicWrite(target + "." + urlKey + ".json",
-                    System.Text.Json.JsonSerializer.Serialize(new { download = result, originalUrl = url, detectedUtc = DateTimeOffset.UtcNow }, Configuration.AgentConfiguration.Json));
+                    System.Text.Json.JsonSerializer.Serialize(new { download = result, originalUrl = url, detected = DateTimeOffset.Now }, Configuration.AgentConfiguration.Json));
                 return result;
             }
             finally { if(File.Exists(temp)) File.Delete(temp); }

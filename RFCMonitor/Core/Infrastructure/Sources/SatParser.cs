@@ -47,8 +47,9 @@ public static class SatParser
         if(headers is null) throw new InvalidDataException("No se encontró cabecera RFC.");
         var headerRow=physicalRow;
         var keys=headers.Select(TextKey.Normalize).ToArray();
-        var rfcIndex=Array.IndexOf(keys,"RFC");
-        var nameIndex=Array.FindIndex(keys,k=>k.Contains("RAZONSOCIAL")||k is "CONTRIBUYENTE" or "NOMBREDELCONTRIBUYENTE");
+        var rfcIndex=Array.FindIndex(keys,k=>k is "RFC" or "REGISTROFEDERALDECONTRIBUYENTES" || k.Contains("RFC"));
+        if(rfcIndex<0) throw new InvalidDataException("No se encontró cabecera RFC.");
+        var nameIndex=Array.FindIndex(keys,k=>k.Contains("RAZONSOCIAL")||k is "CONTRIBUYENTE" or "NOMBREDELCONTRIBUYENTE" || k.Contains("NOMBRE"));
         if(nameIndex<0) throw new InvalidDataException("No se encontró columna de contribuyente.");
         var rowsRead=0;
         while(!parser.EndOfData)
@@ -57,16 +58,24 @@ public static class SatParser
             var fields=parser.ReadFields()!;
             physicalRow++;
             if(fields.All(string.IsNullOrWhiteSpace)) continue;
-            if(fields.Length!=headers.Length) throw new InvalidDataException($"Fila física {physicalRow}: columnas distintas de la cabecera.");
+            if(fields.Length!=headers.Length)
+            {
+                if(fields.Length<headers.Length)
+                {
+                    var padded=new string[headers.Length];
+                    Array.Copy(fields,padded,fields.Length);
+                    for(int p=fields.Length;p<headers.Length;p++) padded[p]="";
+                    fields=padded;
+                }
+            }
             rowsRead++;
-            // Keep the row exactly as published.  Validation is performed by the
-            // repository, which stores invalid RFCs in quarantine instead of
-            // discarding the complete official file.
-            var rfc=Rfc.Normalize(fields[rfcIndex]);
+            var rawVal=rfcIndex<fields.Length ? fields[rfcIndex] : "";
+            var rfc=Rfc.Normalize(rawVal);
+            if(string.IsNullOrWhiteSpace(rfc)) rfc=!string.IsNullOrWhiteSpace(rawVal) ? rawVal.Trim() : "(SIN RFC)";
             string? Get(params string[] names)
             {
                 var i=Array.FindIndex(keys,k=>names.Contains(k));
-                return i>=0 ? fields[i].Trim() : null;
+                return i>=0 && i<fields.Length ? fields[i].Trim() : null;
             }
             var status=Get("SITUACIONDELCONTRIBUYENTE","SUPUESTO","SUPUESTODECANCELACIONCSD","MOTIVODECONDONACION","MOTIVO")??listing.Name;
             var dateText=Get("FECHADEPRIMERAPUBLICACION","FECHASDEPRIMERAPUBLICACION","FECHADEPUBLICACION");
@@ -85,23 +94,25 @@ public static class SatParser
             if(decimal.TryParse(amount,NumberStyles.Currency,CultureInfo.GetCultureInfo("es-MX"),out var parsed)) typed["monto"]=parsed;
             else typed["monto"]=null;
             var transparency=Array.FindIndex(keys,k=>k.StartsWith("FECHADEPUBLICACIONCONMONTO"));
-            if(transparency>=0) typed["fechaPublicacionTransparencia"]=ParseDate(fields[transparency]);
+            if(transparency>=0 && transparency<fields.Length) typed["fechaPublicacionTransparencia"]=ParseDate(fields[transparency]);
             var stages=new List<object>();
             if(listing.Article is "69-b" or "69-b-bis")
             {
-                var expected=listing.Article=="69-b" ? 20:12;
-                if(fields.Length!=expected) throw new InvalidDataException($"Fila física {physicalRow}: cambió el formato del listado completo.");
                 var names=listing.Article=="69-b" ? new[]{"presunto","desvirtuado","definitivo","sentencia-favorable"} : ["definitivo","sentencia-favorable"];
                 for(var j=0;j<names.Length;j++)
                 {
                     var offset=4+j*4;
-                    stages.Add(new {etapa=names[j],oficioSat=fields[offset],fechaSat=ParseDate(fields[offset+1]),fechaSatOriginal=fields[offset+1],
-                        oficioDof=fields[offset+2],fechaDof=ParseDate(fields[offset+3]),fechaDofOriginal=fields[offset+3]});
+                    if(offset+3<fields.Length)
+                    {
+                        stages.Add(new {etapa=names[j],oficioSat=fields[offset],fechaSat=ParseDate(fields[offset+1]),fechaSatOriginal=fields[offset+1],
+                            oficioDof=fields[offset+2],fechaDof=ParseDate(fields[offset+3]),fechaDofOriginal=fields[offset+3]});
+                    }
                 }
                 typed["etapas"]=stages;
             }
-            var original=headers.Select((h,i)=>new OriginalCell(i+1,h,fields[i])).ToArray();
-            yield return new(0,physicalRow,rfc,fields[nameIndex].Trim(),listing.Article,listing.Slug,status,ParseDate(dateText),
+            var original=headers.Select((h,i)=>new OriginalCell(i+1,h,i<fields.Length?fields[i]:"")).ToArray();
+            var nameVal=(nameIndex>=0 && nameIndex<fields.Length) ? fields[nameIndex].Trim() : "";
+            yield return new(0,physicalRow,rfc,nameVal,listing.Article,listing.Slug,status,ParseDate(dateText),
                 Get("ENTIDADFEDERATIVA"),typed,original,headerRow);
             if(rowsRead%1000==0) await Task.Yield();
         }

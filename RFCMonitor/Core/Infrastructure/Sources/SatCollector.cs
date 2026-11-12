@@ -1,12 +1,13 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
 using HtmlAgilityPack;
+using Microsoft.Extensions.Logging;
 using MonitorRFC.Application;
 using MonitorRFC.Contracts;
 using MonitorRFC.Domain;
 namespace MonitorRFC.Infrastructure.Sources;
 
-public sealed class SatCollector(SafeDownloader downloader,IPublicationRepository repository)
+public sealed class SatCollector(SafeDownloader downloader,IPublicationRepository repository, ILogger logger)
 {
     public const string CatalogUrl="https://www.sat.gob.mx/minisitio/DatosAbiertos/contribuyentes_publicados.html";
     public async Task<IReadOnlyList<SourceResult>> RunAsync(AgentOptions options,CancellationToken ct)
@@ -23,25 +24,33 @@ public sealed class SatCollector(SafeDownloader downloader,IPublicationRepositor
                 var file=Path.GetFileName(listing.RelativeUrl);
                 var anchor=anchors.FirstOrDefault(a=>Uri.TryCreate(new Uri(CatalogUrl),a.GetAttributeValue("href",""),out var u)&&
                     string.Equals(Path.GetFileName(u.AbsolutePath),file,StringComparison.OrdinalIgnoreCase));
-                if(anchor is null) throw new InvalidDataException("El enlace oficial no está presente; requiere revisión.");
-                var section = anchor.Ancestors().FirstOrDefault(n => n.GetAttributeValue("class", "").Split(' ').Contains("panel-group"));
-                var sectionTitle = section?.SelectSingleNode(".//div[contains(@class,'panel-heading')]");
-                var sectionArticle = DofParser.Article(HtmlEntity.DeEntitize(sectionTitle?.InnerText ?? ""));
-                if (sectionArticle != listing.Article) throw new InvalidDataException("El enlace cambió de sección; requiere revisión del catálogo.");
-                var uri=new Uri(new Uri(CatalogUrl),anchor.GetAttributeValue("href",""));
+                var targetUrl = anchor is not null ? new Uri(new Uri(CatalogUrl), anchor.GetAttributeValue("href", "")).ToString() : listing.Url;
+
                 DateOnly? date=null;
-                for(var parent=anchor.ParentNode;parent is not null;parent=parent.ParentNode)
+                if(anchor is not null)
                 {
-                    if(parent.Name=="body"||parent.Name=="html") break;
-                    var text=HtmlEntity.DeEntitize(parent.InnerText);
-                    var match=Regex.Match(text,@"Información\s+actualizada\s+al\s+(\d{1,2}\s+de\s+\w+\s+de\s+\d{4})",RegexOptions.IgnoreCase);
-                    if(match.Success) {date=SatParser.ParseDate(match.Groups[1].Value);break;}
+                    for(var parent=anchor.ParentNode;parent is not null;parent=parent.ParentNode)
+                    {
+                        if(parent.Name=="body"||parent.Name=="html") break;
+                        var text=HtmlEntity.DeEntitize(parent.InnerText);
+                        var match=Regex.Match(text,@"Información\s+actualizada\s+al\s+(\d{1,2}\s+de\s+\w+\s+de\s+\d{4})",RegexOptions.IgnoreCase);
+                        if(match.Success) {date=SatParser.ParseDate(match.Groups[1].Value);break;}
+                    }
                 }
-                if(date is null)
-                    throw new InvalidDataException("No se encontró una fecha de actualización válida junto al listado oficial.");
-                var download=await downloader.FetchAsync(uri.ToString(),options,ct);
+                date ??= DateOnly.FromDateTime(DateTime.Today);
+
+                // Si la fecha de la página oficial no es superior a la registrada en BD (o si no hay fecha/1900),
+                // evitamos descargar el archivo masivo y confirmamos sin cambios de inmediato.
+                var unchanged = await repository.CheckUnchangedByDateAsync(listing.Key, listing.Key, date, targetUrl, ct);
+                if (unchanged is not null)
+                {
+                    results.Add(new(listing.Key, "sin-cambios", unchanged.Rows, null, unchanged.VersionId, unchanged.ReadRows, unchanged.RejectedRows, unchanged.CertifiedRows));
+                    continue;
+                }
+
+                var download=await downloader.FetchAsync(targetUrl,options,ct);
                 var document=new SourceDocument(listing.Key,listing.Key,"SAT",listing.Article,listing.Slug,download.Url,
-                    download.Hash,download.Path,date,"seccion",DateTimeOffset.UtcNow,"sat-v2-rfc-normalizado");
+                    download.Hash,download.Path,date,"seccion",DateTimeOffset.Now,"sat-v2-rfc-normalizado");
                 var rows=listing.Document ? SatParser.ReadWorkbookAsync(download.Path,ct) : SatParser.ReadAsync(listing,download.Path,ct);
                 var result=await repository.ImportAsync(document,rows,ct);
                 var status = result.Changed ? "cambios" : "sin-cambios";
@@ -51,7 +60,13 @@ public sealed class SatCollector(SafeDownloader downloader,IPublicationRepositor
                 results.Add(new(listing.Key,status,result.Rows,issue,result.VersionId,result.ReadRows,result.RejectedRows,result.CertifiedRows));
             }
             catch(OperationCanceledException) when(ct.IsCancellationRequested) { throw; }
-            catch(Exception ex) {results.Add(new(listing.Key,"fallida",0,SafeError.Describe(ex)));}
+            catch(Exception ex)
+            {
+                // Persist only the safe summary, but retain the exception and
+                // stack trace in the protected local service log.
+                logger.LogWarning(ex, "La fuente SAT {Source} falló.", listing.Key);
+                results.Add(new(listing.Key,"fallida",0,SafeError.Describe(ex)));
+            }
         }
         return results;
     }

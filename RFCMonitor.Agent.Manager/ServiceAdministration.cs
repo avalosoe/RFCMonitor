@@ -3,6 +3,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.ServiceProcess;
 using Microsoft.Win32.SafeHandles;
+using MonitorRFC.Infrastructure.Configuration;
 namespace MonitorRFC.Agent.Manager;
 
 public static class ServiceAdministration
@@ -24,6 +25,9 @@ public static class ServiceAdministration
                 throw new ArgumentException("Seleccione el archivo .exe publicado que ejecuta el servicio.");
             var sourceDirectory = Path.GetDirectoryName(binary)!;
             Directory.CreateDirectory(InstallDirectory);
+            // Created by the elevated Manager so its owner is preserved; the
+            // service later augments access without replacing the ACL.
+            AgentConfiguration.SecureDirectory(Path.Combine(InstallDirectory, "log"));
             if (!string.Equals(Path.GetFullPath(sourceDirectory).TrimEnd(Path.DirectorySeparatorChar), InstallDirectory.TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))
                 CopyPublication(sourceDirectory, InstallDirectory);
             binary = Path.Combine(InstallDirectory, Path.GetFileName(binary));

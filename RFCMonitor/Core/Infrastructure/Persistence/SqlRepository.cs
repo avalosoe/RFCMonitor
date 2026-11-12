@@ -30,7 +30,7 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
     private static void P(SqlCommand cmd, string name, SqlDbType type, object? value, int size = 0)
     {
         var p = size == 0 ? cmd.Parameters.Add(name, type) : cmd.Parameters.Add(name, type, size);
-        p.Value = value switch { null => DBNull.Value, DateOnly d => d.ToDateTime(TimeOnly.MinValue), DateTimeOffset d => d.UtcDateTime, _ => value };
+        p.Value = value switch { null => DBNull.Value, DateOnly d => d.ToDateTime(TimeOnly.MinValue), DateTimeOffset d => d.LocalDateTime, _ => value };
     }
     private SqlConnection Writer => leaseConnection is { State: ConnectionState.Open } c ? c :
         throw new InvalidOperationException("La operación de ingesta requiere el lease exclusivo activo.");
@@ -45,8 +45,8 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
             owner = Guid.NewGuid();
             using var fence = Command(c, """
                 SET XACT_ABORT ON; BEGIN TRANSACTION;
-                UPDATE dbo.Lease WITH(UPDLOCK,HOLDLOCK) SET Propietario=@Owner,FencingToken=FencingToken+1,ExpiraUtc=CONVERT(datetime2,'9999-12-31') WHERE Recurso='ingestion';
-                IF @@ROWCOUNT=0 INSERT dbo.Lease(Recurso,Propietario,FencingToken,ExpiraUtc) VALUES('ingestion',@Owner,1,CONVERT(datetime2,'9999-12-31'));
+                UPDATE dbo.Lease WITH(UPDLOCK,HOLDLOCK) SET Propietario=@Owner,FencingToken=FencingToken+1,Expira=CONVERT(datetime2,'9999-12-31') WHERE Recurso='ingestion';
+                IF @@ROWCOUNT=0 INSERT dbo.Lease(Recurso,Propietario,FencingToken,Expira) VALUES('ingestion',@Owner,1,CONVERT(datetime2,'9999-12-31'));
                 SELECT FencingToken FROM dbo.Lease WHERE Recurso='ingestion'; COMMIT;
                 """);
             P(fence, "@Owner", SqlDbType.UniqueIdentifier, owner);
@@ -67,7 +67,7 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
             {
                 if (connection.State == ConnectionState.Open)
                 {
-                    using var cmd = Command(connection,"UPDATE dbo.Lease SET ExpiraUtc=SYSUTCDATETIME() WHERE Recurso='ingestion' AND Propietario=@Owner; EXEC sys.sp_releaseapplock @Resource='MonitorRFC.ingestion',@LockOwner='Session';");
+                    using var cmd = Command(connection,"UPDATE dbo.Lease SET Expira=SYSDATETIME() WHERE Recurso='ingestion' AND Propietario=@Owner; EXEC sys.sp_releaseapplock @Resource='MonitorRFC.ingestion',@LockOwner='Session';");
                     P(cmd,"@Owner",SqlDbType.UniqueIdentifier,repository.owner);
                     await cmd.ExecuteNonQueryAsync();
                 }
@@ -121,17 +121,17 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
             }
             if(publication == 0)
             {
-                using var insert=Command(c,"INSERT dbo.Publicacion(FuenteKey,ClaveExterna,PrimeraDeteccionUtc) OUTPUT INSERTED.PublicacionId VALUES(@Source,@External,@Detected);",transaction);
-                P(insert,"@Source",SqlDbType.NVarChar,document.SourceKey,100); P(insert,"@External",SqlDbType.NVarChar,document.ExternalKey,100); P(insert,"@Detected",SqlDbType.DateTime2,document.DetectedUtc);
+                using var insert=Command(c,"INSERT dbo.Publicacion(FuenteKey,ClaveExterna,PrimeraDeteccion) OUTPUT INSERTED.PublicacionId VALUES(@Source,@External,@Detected);",transaction);
+                P(insert,"@Source",SqlDbType.NVarChar,document.SourceKey,100); P(insert,"@External",SqlDbType.NVarChar,document.ExternalKey,100); P(insert,"@Detected",SqlDbType.DateTime2,document.Detected);
                 publication=Convert.ToInt64(await insert.ExecuteScalarAsync(ct));
             }
             using var create=Command(c,"""
-                INSERT dbo.PublicacionVersion(PublicacionId,HashContenido,ParserVersion,Url,EvidenciaRuta,FechaFuente,AlcanceFecha,DetectadaUtc,CodNota,Titulo,Edicion,Organismo)
+                INSERT dbo.PublicacionVersion(PublicacionId,HashContenido,ParserVersion,Url,EvidenciaRuta,FechaFuente,AlcanceFecha,Detectada,CodNota,Titulo,Edicion,Organismo)
                 OUTPUT INSERTED.VersionId VALUES(@Publication,@Hash,@Parser,@Url,@Evidence,@Date,@Scope,@Detected,@Note,@Title,@Edition,@Agency);
                 """,transaction);
             P(create,"@Publication",SqlDbType.BigInt,publication); P(create,"@Hash",SqlDbType.Char,document.Hash,64); P(create,"@Parser",SqlDbType.VarChar,document.ParserVersion,40);
             P(create,"@Url",SqlDbType.NVarChar,document.Url,2048); P(create,"@Evidence",SqlDbType.NVarChar,document.EvidencePath,2048);
-            P(create,"@Date",SqlDbType.Date,document.SourceDate); P(create,"@Scope",SqlDbType.VarChar,document.DateScope,30); P(create,"@Detected",SqlDbType.DateTime2,document.DetectedUtc);
+            P(create,"@Date",SqlDbType.Date,document.SourceDate); P(create,"@Scope",SqlDbType.VarChar,document.DateScope,30); P(create,"@Detected",SqlDbType.DateTime2,document.Detected);
             P(create,"@Note",SqlDbType.BigInt,document.NoteCode); P(create,"@Title",SqlDbType.NVarChar,document.Title,-1); P(create,"@Edition",SqlDbType.NVarChar,document.Edition,40); P(create,"@Agency",SqlDbType.NVarChar,document.Agency,500);
             var version=Convert.ToInt64(await create.ExecuteScalarAsync(ct));
             var isDocument=listing?.Document == true;
@@ -153,21 +153,29 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                 else
                 {
                     read++;
-                    var rfcValid=Rfc.IsValid(row.Rfc);
-                    var sourceValid=SourceCatalog.Articles.Contains(row.Article) && (listing is null || (row.Article==listing.Article && row.Listing==listing.Slug));
-                    var rawRfc=row.Original.FirstOrDefault(cell=>TextKey.Normalize(cell.Nombre)=="RFC")?.Valor ?? row.Rfc;
-                    var valid=rfcValid && sourceValid;
-                    var reason=!rfcValid ? $"RFC no consultable: {rawRfc}" : !sourceValid ? "Fila fuera de su fuente." : null;
-                    rawRows.Rows.Add(version,row.Table,row.Row,(object?)rawRfc??DBNull.Value,valid,(object?)reason??DBNull.Value,
-                        JsonSerializer.Serialize(row.Original,Json));
-                    if(rawRows.Rows.Count>=1000) await FlushAsync(c,transaction,rawRows,"dbo.FilaFuente",ct);
-                    if(!sourceValid) throw new InvalidDataException($"Fila física {row.Row}: fila fuera de su fuente.");
-                    if(!rfcValid) { rejected++; reviewDetail ??= $"Fila física {row.Row}: {reason}"; continue; }
-                    var detail=JsonSerializer.Serialize(new {tipo=document.Origin+":"+row.Article+":"+row.Listing,tipado=row.Typed,camposOriginales=row.Original},Json);
-                    batch.Rows.Add(version,row.Table,row.Row,Rfc.Normalize(row.Rfc!),row.Name,row.Article,row.Listing,row.Status,
-                        row.PublicationDate is { } date ? date.ToDateTime(TimeOnly.MinValue):DBNull.Value,(object?)row.Entity??DBNull.Value,detail);
+                    var rawRfc = row.Original.FirstOrDefault(cell => TextKey.Normalize(cell.Nombre) == "RFC")?.Valor ?? row.Rfc;
+                    var rfc = Rfc.Normalize(string.IsNullOrWhiteSpace(row.Rfc) ? rawRfc : row.Rfc);
+                    if (string.IsNullOrWhiteSpace(rfc)) rfc = !string.IsNullOrWhiteSpace(rawRfc) ? rawRfc.Trim() : "(SIN RFC)";
+                    if (rfc.Length > 100) rfc = rfc[..100];
+
+                    var sourceValid = SourceCatalog.Articles.Contains(row.Article) && (listing is null || (row.Article == listing.Article && row.Listing == listing.Slug));
+                    rawRows.Rows.Add(version, row.Table, row.Row, (object?)rawRfc ?? DBNull.Value, true, DBNull.Value,
+                        JsonSerializer.Serialize(row.Original, Json));
+                    if (rawRows.Rows.Count >= 1000) await FlushAsync(c, transaction, rawRows, "dbo.FilaFuente", ct);
+                    if (!sourceValid) throw new InvalidDataException($"Fila física {row.Row}: fila fuera de su fuente.");
+
+                    var name = row.Name ?? "";
+                    if (name.Length > 2000) name = name[..2000];
+                    var status = row.Status ?? "";
+                    if (status.Length > 2000) status = status[..2000];
+                    var entity = row.Entity;
+                    if (entity is not null && entity.Length > 1000) entity = entity[..1000];
+
+                    var detail = JsonSerializer.Serialize(new { tipo = document.Origin + ":" + row.Article + ":" + row.Listing, tipado = row.Typed, camposOriginales = row.Original }, Json);
+                    batch.Rows.Add(version, row.Table, row.Row, rfc, name, row.Article, row.Listing, status,
+                        row.PublicationDate is { } date ? date.ToDateTime(TimeOnly.MinValue) : DBNull.Value, (object?)entity ?? DBNull.Value, detail);
                     count++;
-                    if(batch.Rows.Count>=1000) await FlushAsync(c,transaction,batch,"dbo.RegistroFuente",ct);
+                    if (batch.Rows.Count >= 1000) await FlushAsync(c, transaction, batch, "dbo.RegistroFuente", ct);
                 }
             }
             await FlushAsync(c,transaction,batch,isDocument?"dbo.DocumentoCelda":"dbo.RegistroFuente",ct);
@@ -178,7 +186,7 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
             using var promote=Command(c,"""
                 UPDATE dbo.PublicacionVersion SET Estado='publicada',Filas=@Rows,FilasLeidas=@Read,FilasRechazadas=@Rejected,
                     Certificacion='certificada',
-                    IncorporadaUtc=SYSUTCDATETIME() WHERE VersionId=@Version;
+                    Incorporada=SYSDATETIME() WHERE VersionId=@Version;
                 UPDATE dbo.Publicacion SET VersionActivaId=@Version WHERE PublicacionId=@Publication;
                 """,transaction);
             P(promote,"@Rows",SqlDbType.BigInt,count); P(promote,"@Read",SqlDbType.BigInt,isDocument?count:read); P(promote,"@Rejected",SqlDbType.BigInt,rejected);
@@ -227,10 +235,10 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
     private static async Task ObserveAsync(SqlConnection c, SqlTransaction tx, long version, SourceDocument document, bool unchanged, CancellationToken ct)
     {
         using var cmd=Command(c,"""
-            INSERT dbo.ObservacionPublicacion(VersionId,ObservadaUtc,FechaFuente,AlcanceFecha,Url,SinCambios)
+            INSERT dbo.ObservacionPublicacion(VersionId,Observada,FechaFuente,AlcanceFecha,Url,SinCambios)
             VALUES(@Version,@Date,@SourceDate,@Scope,@Url,@Unchanged);
             """,tx);
-        P(cmd,"@Version",SqlDbType.BigInt,version);P(cmd,"@Date",SqlDbType.DateTime2,document.DetectedUtc);
+        P(cmd,"@Version",SqlDbType.BigInt,version);P(cmd,"@Date",SqlDbType.DateTime2,document.Detected);
         P(cmd,"@SourceDate",SqlDbType.Date,document.SourceDate);P(cmd,"@Scope",SqlDbType.VarChar,document.DateScope,30);
         P(cmd,"@Url",SqlDbType.NVarChar,document.Url,2048);P(cmd,"@Unchanged",SqlDbType.Bit,unchanged);
         await cmd.ExecuteNonQueryAsync(ct);
@@ -242,6 +250,52 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
         foreach(DataColumn col in batch.Columns) bulk.ColumnMappings.Add(col.ColumnName,col.ColumnName);
         await bulk.WriteToServerAsync(batch,ct); batch.Clear();
     }
+    public async Task<ImportResult?> CheckUnchangedByDateAsync(string sourceKey, string externalKey, DateOnly? sourceDate, string url, CancellationToken ct)
+    {
+        if (sourceDate is null) return null;
+        var c = Writer;
+        await using var transaction = (SqlTransaction)await c.BeginTransactionAsync(ct);
+        await AssertLeaseAsync(transaction, ct);
+        using var find = Command(c, """
+            SELECT p.PublicacionId, v.VersionId, v.FechaFuente, v.Filas, v.FilasLeidas, v.FilasRechazadas
+            FROM dbo.Publicacion p WITH(UPDLOCK,HOLDLOCK)
+            JOIN dbo.PublicacionVersion v ON v.VersionId = p.VersionActivaId
+            WHERE p.FuenteKey = @Source AND p.ClaveExterna = @External;
+            """, transaction);
+        P(find, "@Source", SqlDbType.NVarChar, sourceKey, 100);
+        P(find, "@External", SqlDbType.NVarChar, externalKey, 100);
+        await using var r = await find.ExecuteReaderAsync(ct);
+        if (await r.ReadAsync(ct))
+        {
+            var publicationId = r.GetInt64(0);
+            var versionId = r.GetInt64(1);
+            DateOnly? activeDate = r.IsDBNull(2) ? null : DateOnly.FromDateTime(r.GetDateTime(2));
+            var filas = r.GetInt64(3);
+            var filasLeidas = r.GetInt64(4);
+            var filasRechazadas = r.GetInt64(5);
+            await r.DisposeAsync();
+
+            // Si la fecha activa existe, es posterior a 1900 y la fecha del portal no es superior (es menor o igual),
+            // no se requiere descargar ni reprocesar el archivo: se registra la observación y se retorna sin cambios.
+            if (activeDate is not null && activeDate.Value.Year > 1900 && sourceDate.Value <= activeDate.Value)
+            {
+                var certified = await CertifiedRowsAsync(c, transaction, publicationId, ct);
+                using var cmd = Command(c, """
+                    INSERT dbo.ObservacionPublicacion(VersionId,Observada,FechaFuente,AlcanceFecha,Url,SinCambios)
+                    VALUES(@Version,SYSDATETIME(),@SourceDate,'seccion',@Url,1);
+                    """, transaction);
+                P(cmd, "@Version", SqlDbType.BigInt, versionId);
+                P(cmd, "@SourceDate", SqlDbType.Date, sourceDate);
+                P(cmd, "@Url", SqlDbType.NVarChar, url, 2048);
+                await cmd.ExecuteNonQueryAsync(ct);
+                await transaction.CommitAsync(ct);
+                return new ImportResult(versionId, false, filas, filasLeidas, filasRechazadas, certified);
+            }
+        }
+        await r.DisposeAsync();
+        await transaction.RollbackAsync(ct);
+        return null;
+    }
     public async Task<long> PublishGenerationAsync(CancellationToken ct)
     {
         using var cmd=Command(Writer,"dbo.PublicarGeneracion"); cmd.CommandType=CommandType.StoredProcedure;
@@ -252,7 +306,7 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
     {
         await using var c=await OpenAsync(ct); using var cmd=Command(c,"dbo.Encabezado"); cmd.CommandType=CommandType.StoredProcedure;
         await using var r=await cmd.ExecuteReaderAsync(ct);
-        return await r.ReadAsync(ct)?new(r.GetInt64(0),new DateTimeOffset(DateTime.SpecifyKind(r.GetDateTime(1),DateTimeKind.Utc)),r.GetString(2),r.GetString(3)):null;
+        return await r.ReadAsync(ct)?new(r.GetInt64(0),new DateTimeOffset(DateTime.SpecifyKind(r.GetDateTime(1),DateTimeKind.Local)),r.GetString(2),r.GetString(3)):null;
     }
     public async Task<JsonElement> GetOperationalStateAsync(CancellationToken ct)
     {
@@ -302,7 +356,7 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                 IF @@ROWCOUNT=0 INSERT dbo.ObjetivoCobertura(Id,DofDesde,DofHasta,DofHabilitado) VALUES(1,@Start,@End,@Enabled);
                 """);
             P(objective,"@Enabled",SqlDbType.Bit,settings.DofEnabled); P(objective,"@Start",SqlDbType.Date,settings.DofStartDate);
-            P(objective,"@End",SqlDbType.Date,DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow,Scheduling.ScheduleCalculator.Zone(settings.Schedule.TimeZone)).DateTime));
+            P(objective,"@End",SqlDbType.Date,DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(DateTimeOffset.Now,Scheduling.ScheduleCalculator.Zone(settings.Schedule.TimeZone)).DateTime));
             await objective.ExecuteNonQueryAsync(ct);
         }
     }
@@ -324,28 +378,23 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
         while(await r.ReadAsync(ct))yield return new(r.GetInt64(0),r.GetInt64(1),r.GetString(2),r.GetString(3),r.GetString(4),r.GetString(5),r.GetString(6),r.GetString(7),r.GetString(8),
             r.IsDBNull(9)?null:DateOnly.FromDateTime(r.GetDateTime(9)),r.GetBoolean(10),r.IsDBNull(11)?null:r.GetInt64(11),r.GetString(12),r.GetInt32(13),r.GetInt32(14),r.GetString(15));
     }
-    public async Task<(long Rfcs,long Appearances)> CountAsync(long generation,QueryFilter filter,string[]? rfcs,CancellationToken ct)
-    {
-        await using var c=await OpenAsync(ct); using var cmd=Query(c,"dbo.Conteos",generation,filter,rfcs);
-        await using var r=await cmd.ExecuteReaderAsync(ct); await r.ReadAsync(ct); return(r.GetInt64(0),r.GetInt64(1));
-    }
     public async Task SaveExecutionAsync(ExecutionReport report,CancellationToken ct)
     {
         await using var c=await OpenAsync(ct); await using var tx=(SqlTransaction)await c.BeginTransactionAsync(ct);
         using var cmd=Command(c,"""
             IF NOT EXISTS(SELECT 1 FROM dbo.Ejecucion WITH(UPDLOCK,HOLDLOCK) WHERE EjecucionId=@Id)
-            INSERT dbo.Ejecucion(EjecucionId,InicioUtc,FinUtc,Resultado,Disparador,ResumenJson) VALUES(@Id,@Start,@End,@Result,@Trigger,@Json);
+            INSERT dbo.Ejecucion(EjecucionId,Inicio,Fin,Resultado,Disparador,ResumenJson) VALUES(@Id,@Start,@End,@Result,@Trigger,@Json);
             """,tx);
-        P(cmd,"@Id",SqlDbType.UniqueIdentifier,report.EjecucionId); P(cmd,"@Start",SqlDbType.DateTime2,report.InicioUtc); P(cmd,"@End",SqlDbType.DateTime2,report.FinUtc);
+        P(cmd,"@Id",SqlDbType.UniqueIdentifier,report.EjecucionId); P(cmd,"@Start",SqlDbType.DateTime2,report.Inicio); P(cmd,"@End",SqlDbType.DateTime2,report.Fin);
         P(cmd,"@Result",SqlDbType.VarChar,report.Resultado,30); P(cmd,"@Trigger",SqlDbType.VarChar,report.Disparador,30); P(cmd,"@Json",SqlDbType.NVarChar,JsonSerializer.Serialize(report,Json),-1);
         await cmd.ExecuteNonQueryAsync(ct);
         foreach(var source in report.Fuentes)
         {
             using var state=Command(c,"""
-                UPDATE dbo.FuenteEstado WITH(UPDLOCK,HOLDLOCK) SET UltimoIntentoUtc=@Date,UltimoExitoUtc=CASE WHEN @Ok=1 THEN @Date ELSE UltimoExitoUtc END,Resultado=@Result,ErrorSeguro=@Error WHERE FuenteKey=@Source;
-                IF @@ROWCOUNT=0 INSERT dbo.FuenteEstado(FuenteKey,UltimoIntentoUtc,UltimoExitoUtc,Resultado,ErrorSeguro) VALUES(@Source,@Date,CASE WHEN @Ok=1 THEN @Date ELSE NULL END,@Result,@Error);
+                UPDATE dbo.FuenteEstado WITH(UPDLOCK,HOLDLOCK) SET UltimoIntento=@Date,UltimoExito=CASE WHEN @Ok=1 THEN @Date ELSE UltimoExito END,Resultado=@Result,ErrorSeguro=@Error WHERE FuenteKey=@Source;
+                IF @@ROWCOUNT=0 INSERT dbo.FuenteEstado(FuenteKey,UltimoIntento,UltimoExito,Resultado,ErrorSeguro) VALUES(@Source,@Date,CASE WHEN @Ok=1 THEN @Date ELSE NULL END,@Result,@Error);
                 """,tx);
-            P(state,"@Date",SqlDbType.DateTime2,report.FinUtc); P(state,"@Ok",SqlDbType.Bit,source.Resultado is "cambios" or "sin-cambios"); P(state,"@Result",SqlDbType.VarChar,source.Resultado,30);
+            P(state,"@Date",SqlDbType.DateTime2,report.Fin); P(state,"@Ok",SqlDbType.Bit,source.Resultado is "cambios" or "sin-cambios"); P(state,"@Result",SqlDbType.VarChar,source.Resultado,30);
             P(state,"@Error",SqlDbType.NVarChar,source.Error,2000); P(state,"@Source",SqlDbType.NVarChar,source.Fuente,100); await state.ExecuteNonQueryAsync(ct);
         }
         await tx.CommitAsync(ct);
@@ -353,8 +402,8 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
     public async Task CompleteDofDayAsync(DateOnly date,bool complete,string? detail,CancellationToken ct)
     {
         using var cmd=Command(Writer,"""
-            UPDATE dbo.CoberturaDof SET Completa=@Complete,ComprobadaUtc=SYSUTCDATETIME(),Detalle=@Detail WHERE Fecha=@Date;
-            IF @@ROWCOUNT=0 INSERT dbo.CoberturaDof(Fecha,Completa,ComprobadaUtc,Detalle) VALUES(@Date,@Complete,SYSUTCDATETIME(),@Detail);
+            UPDATE dbo.CoberturaDof SET Completa=@Complete,Comprobada=SYSDATETIME(),Detalle=@Detail WHERE Fecha=@Date;
+            IF @@ROWCOUNT=0 INSERT dbo.CoberturaDof(Fecha,Completa,Comprobada,Detalle) VALUES(@Date,@Complete,SYSDATETIME(),@Detail);
             """);
         P(cmd,"@Complete",SqlDbType.Bit,complete);P(cmd,"@Date",SqlDbType.Date,date);P(cmd,"@Detail",SqlDbType.NVarChar,detail,2000);await cmd.ExecuteNonQueryAsync(ct);
     }
@@ -369,7 +418,7 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
     {
         if(max<1||lookback<1)throw new ArgumentOutOfRangeException(nameof(max));
         await using var c=await OpenAsync(ct);
-        using var cmd=Command(c,"SELECT Fecha,Completa,ComprobadaUtc FROM dbo.CoberturaDof WHERE Fecha BETWEEN @Start AND @End;");
+        using var cmd=Command(c,"SELECT Fecha,Completa,Comprobada FROM dbo.CoberturaDof WHERE Fecha BETWEEN @Start AND @End;");
         P(cmd,"@Start",SqlDbType.Date,startDate);P(cmd,"@End",SqlDbType.Date,today);
         var complete=new Dictionary<DateOnly,DateTime>();
         await using(var r=await cmd.ExecuteReaderAsync(ct))while(await r.ReadAsync(ct))if(r.GetBoolean(1))complete[DateOnly.FromDateTime(r.GetDateTime(0))]=r.GetDateTime(2);
@@ -383,8 +432,8 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
     public async Task SaveDofPendingAsync(long code,DateOnly date,string reason,CancellationToken ct)
     {
         using var cmd=Command(Writer,"""
-            UPDATE dbo.NotaPendiente SET Fecha=@Date,Estado='pendiente',Motivo=@Reason,UltimoIntentoUtc=SYSUTCDATETIME() WHERE CodNota=@Code;
-            IF @@ROWCOUNT=0 INSERT dbo.NotaPendiente(CodNota,Fecha,Estado,Motivo,UltimoIntentoUtc) VALUES(@Code,@Date,'pendiente',@Reason,SYSUTCDATETIME());
+            UPDATE dbo.NotaPendiente SET Fecha=@Date,Estado='pendiente',Motivo=@Reason,UltimoIntento=SYSDATETIME() WHERE CodNota=@Code;
+            IF @@ROWCOUNT=0 INSERT dbo.NotaPendiente(CodNota,Fecha,Estado,Motivo,UltimoIntento) VALUES(@Code,@Date,'pendiente',@Reason,SYSDATETIME());
             """);
         P(cmd,"@Code",SqlDbType.BigInt,code);P(cmd,"@Date",SqlDbType.Date,date);P(cmd,"@Reason",SqlDbType.NVarChar,reason,2000);await cmd.ExecuteNonQueryAsync(ct);
     }

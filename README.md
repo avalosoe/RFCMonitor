@@ -74,4 +74,4 @@ dotnet build .\RFCMonitor.sln --configuration Release
 dotnet run --project .\RFCMonitor\RFCMonitor.csproj
 ```
 
-Para instalar el Worker, publique `RFCMonitor.Service`, copie sus binarios a una ubicación protegida y use el Manager ejecutado como administrador. Para actualizarlo, genere los paquetes con `scripts\Publish.ps1`, seleccione `artifacts\publish\Service\RFCMonitor.Service.exe` en el Manager y use `Actualizar servicio`; la operación conserva la configuración y los datos, reemplaza los binarios y reinicia el servicio. La administración del servicio no se expone por el API público.
+Para instalar el Worker, publique `RFCMonitor.Service`, copie sus binarios a una ubicación protegida y use el Manager ejecutado como administrador. Para actualizarlo, seleccione el ejecutable publicado `RFCMonitor.Service.exe` en el Manager y use `Actualizar servicio`; la operación conserva la configuración y los datos, reemplaza los binarios y reinicia el servicio. La administración del servicio no se expone por el API público.

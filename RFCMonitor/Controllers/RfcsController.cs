@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Globalization;
 using Microsoft.AspNetCore.Mvc;
 using MonitorRFC.Application;
 using MonitorRFC.Domain;
@@ -61,14 +62,13 @@ public sealed class RfcsController(IRfcQueryService queries, SqlRepository repos
         var header = await queries.GetHeaderAsync(ct);
         if (header is null) return Problem(statusCode: 503, title: "Aún no hay una generación publicada.");
         var selection = new QueryFilter(article, listing, history);
-        var counts = await queries.CountAsync(header.GenerationId, selection, rfcs, ct);
         var operational = await repository.GetOperationalStateAsync(ct);
-        return new RfcStreamResult(queries, header, selection, rfcs, counts, operational, clock.UtcNow);
+        return new RfcStreamResult(queries, header, selection, rfcs, operational, clock.Now);
     }
 }
 
 public sealed class RfcStreamResult(IRfcQueryService queries, QueryHeader header, QueryFilter filter, string[]? rfcs,
-    (long Rfcs, long Appearances) counts, JsonElement operational, DateTimeOffset now) : IActionResult
+    JsonElement operational, DateTimeOffset now) : IActionResult
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     public async Task ExecuteResultAsync(ActionContext context)
@@ -81,35 +81,51 @@ public sealed class RfcStreamResult(IRfcQueryService queries, QueryHeader header
             using var writer = new Utf8JsonWriter(http.Response.BodyWriter);
             writer.WriteStartObject();
             writer.WriteString("versionContrato", "1.0"); writer.WriteNumber("generacionId", header.GenerationId);
-            writer.WriteString("generadaEn", header.GeneratedUtc); writer.WriteString("consultadaEn", now);
+            writer.WriteString("generadaEn", header.Generated); writer.WriteString("consultadaEn", now);
             writer.WriteString("estadoOperativoConsultadoEn", now);
             writer.WritePropertyName("seleccion");
             JsonSerializer.Serialize(writer, new { articulo = filter.Article, listado = filter.Listing, incluirHistorial = filter.IncludeHistory }, Json);
             writer.WritePropertyName("fuentes"); writer.WriteRawValue(header.SourcesJson);
             writer.WritePropertyName("cobertura"); writer.WriteRawValue(header.CoverageJson);
             writer.WritePropertyName("estadoOperativo"); operational.WriteTo(writer);
-            writer.WritePropertyName("totales");
-            JsonSerializer.Serialize(writer, new { rfcs = rfcs?.LongLength ?? counts.Rfcs, encontrados = counts.Rfcs,
-                noEncontrados = rfcs is null ? 0 : rfcs.LongLength - counts.Rfcs, apariciones = counts.Appearances }, Json);
             writer.WriteStartArray("data");
+            long found = 0, appearances = 0;
             await foreach (var item in Consolidation.ReadAsync(queries.ReadAsync(header.GenerationId, filter, rfcs, ct), rfcs, ct))
             {
+                if (item.Encontrado) found++;
+                appearances += item.Apariciones.Count;
                 writer.WriteStartObject(); writer.WriteString("rfc", item.Rfc); writer.WriteBoolean("encontrado", item.Encontrado);
                 writer.WritePropertyName("nombresPublicados"); JsonSerializer.Serialize(writer, item.NombresPublicados, Json);
                 writer.WritePropertyName("resumen"); JsonSerializer.Serialize(writer, item.Resumen, Json);
                 writer.WriteStartArray("apariciones");
                 foreach (var row in item.Apariciones)
-                    JsonSerializer.Serialize(writer, new { aparicionId = row.Id.ToString(), versionId = row.VersionId,
-                        fuenteId = row.Origin == "DOF" ? "dof:" + row.Article + ":publicaciones-dof" : row.SourceId,
-                        origen = row.Origin, articulo = row.Article, listado = row.Listing, nombrePublicado = row.Name,
-                        estadoOriginal = row.Status, estadoNormalizado = NormalizeStatus(row.Status), fechaPublicacion = row.PublicationDate,
-                        presenteUltimoListadoSat = row.Origin == "SAT" ? (bool?)!row.Historical : null, esHistorica = row.Historical,
-                        codNota = row.NoteCode, evidencia = new { url = row.Url, tabla = row.Table, fila = row.Row },
-                        detalle = JsonSerializer.Deserialize<JsonElement>(row.DetailJson) }, Json);
+                {
+                    writer.WriteStartObject();
+                    writer.WriteString("aparicionId", row.Id.ToString()); writer.WriteNumber("versionId", row.VersionId);
+                    writer.WriteString("fuenteId", row.Origin == "DOF" ? "dof:" + row.Article + ":publicaciones-dof" : row.SourceId);
+                    writer.WriteString("origen", row.Origin); writer.WriteString("articulo", row.Article); writer.WriteString("listado", row.Listing);
+                    writer.WriteString("nombrePublicado", row.Name); writer.WriteString("estadoOriginal", row.Status);
+                    writer.WriteString("estadoNormalizado", NormalizeStatus(row.Status));
+                    if (row.PublicationDate is { } publicationDate) writer.WriteString("fechaPublicacion", publicationDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+                    else writer.WriteNull("fechaPublicacion");
+                    if (row.Origin == "SAT") writer.WriteBoolean("presenteUltimoListadoSat", !row.Historical);
+                    else writer.WriteNull("presenteUltimoListadoSat");
+                    writer.WriteBoolean("esHistorica", row.Historical);
+                    if (row.NoteCode is { } noteCode) writer.WriteNumber("codNota", noteCode); else writer.WriteNull("codNota");
+                    writer.WritePropertyName("evidencia"); JsonSerializer.Serialize(writer, new { url = row.Url, tabla = row.Table, fila = row.Row }, Json);
+                    writer.WritePropertyName("detalle"); writer.WriteRawValue(row.DetailJson);
+                    writer.WriteEndObject();
+                }
                 writer.WriteEndArray(); writer.WriteEndObject();
                 if (writer.BytesPending >= 32768) { writer.Flush(); await http.Response.BodyWriter.FlushAsync(ct); }
             }
-            writer.WriteEndArray(); writer.WriteEndObject(); writer.Flush();
+            writer.WriteEndArray();
+            // Compute totals while writing. This avoids dbo.Conteos scanning the same
+            // generation a second time solely to obtain COUNT(DISTINCT Rfc).
+            writer.WritePropertyName("totales");
+            JsonSerializer.Serialize(writer, new { rfcs = rfcs?.LongLength ?? found, encontrados = found,
+                noEncontrados = rfcs is null ? 0 : rfcs.LongLength - found, apariciones = appearances }, Json);
+            writer.WriteEndObject(); writer.Flush();
             await http.Response.BodyWriter.FlushAsync(ct);
         }
         catch

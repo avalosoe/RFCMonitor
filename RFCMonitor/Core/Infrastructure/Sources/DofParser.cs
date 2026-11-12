@@ -67,30 +67,55 @@ public static partial class DofParser
             foreach(var cells in grid)
             {
                 rowNumber++;
-                if(cells.Any(c=>TextKey.Normalize(c) is "RFC" or "REGISTROFEDERALDECONTRIBUYENTES"))
+                if(cells.Any(c=>TextKey.Normalize(c) is "RFC" or "REGISTROFEDERALDECONTRIBUYENTES" || TextKey.Normalize(c).Contains("RFC")))
                 { headers=cells.ToArray(); continue; }
-                var matches=cells.Select((cell,index)=>(Rfc:Regex.Replace(cell,"\\s+","").ToUpperInvariant(),Index:index))
-                    .Where(c=>Rfc.IsValid(c.Rfc)).ToArray();
-                if(matches.Length==0)
+
+                var rfcColumn = headers is null ? -1 : Array.FindIndex(headers, h =>
                 {
-                    var rfcColumn = headers is null ? -1 : Array.FindIndex(headers, h => TextKey.Normalize(h) is "RFC" or "REGISTROFEDERALDECONTRIBUYENTES");
-                    if (rfcColumn >= 0 && cells.Length >= headers!.Length && !string.IsNullOrWhiteSpace(cells[rfcColumn])) review = true;
-                    continue;
+                    var k = TextKey.Normalize(h);
+                    return k is "RFC" or "REGISTROFEDERALDECONTRIBUYENTES" || k.Contains("RFC") || k.Contains("REGISTROFEDERAL");
+                });
+
+                string rfcVal = "";
+                int rfcIdx = -1;
+
+                if (rfcColumn >= 0 && rfcColumn < cells.Length && !string.IsNullOrWhiteSpace(cells[rfcColumn]))
+                {
+                    rfcVal = Rfc.Normalize(cells[rfcColumn]);
+                    rfcIdx = rfcColumn;
                 }
-                if(matches.Length>1) {review=true;continue;}
-                var match=matches[0];
-                var nameIndex=headers is null?-1:Array.FindIndex(headers,h=>TextKey.Normalize(h).Contains("NOMBRE")||TextKey.Normalize(h).Contains("RAZONSOCIAL"));
-                if(nameIndex<0) nameIndex=match.Index+1;
-                var name=nameIndex<cells.Length ? cells[nameIndex]:"";
-                if(string.IsNullOrWhiteSpace(name)) {review=true;continue;}
-                var context=localContext+" "+title;
-                var status=Status(localContext, article);
+                else
+                {
+                    var matches = cells.Select((cell, index) => (Rfc: Regex.Replace(cell, "\\s+", "").ToUpperInvariant(), Index: index))
+                        .Where(c => !string.IsNullOrWhiteSpace(c.Rfc) && (Rfc.IsStrictRfc(c.Rfc) || (c.Rfc.Length >= 8 && c.Rfc.Length <= 50 && char.IsLetterOrDigit(c.Rfc[0]))))
+                        .ToArray();
+
+                    if (matches.Length > 0)
+                    {
+                        var m = matches.FirstOrDefault(c => Rfc.IsStrictRfc(c.Rfc));
+                        if (string.IsNullOrEmpty(m.Rfc)) m = matches[0];
+                        rfcVal = Rfc.Normalize(m.Rfc);
+                        rfcIdx = m.Index;
+                    }
+                }
+
+                if (string.IsNullOrWhiteSpace(rfcVal)) continue;
+
+                var nameIndex = headers is null ? -1 : Array.FindIndex(headers, h => TextKey.Normalize(h).Contains("NOMBRE") || TextKey.Normalize(h).Contains("RAZON") || TextKey.Normalize(h).Contains("CONTRIBUYENTE"));
+                if (nameIndex < 0) nameIndex = rfcIdx + 1;
+                var name = nameIndex >= 0 && nameIndex < cells.Length ? cells[nameIndex].Trim() : "";
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    name = cells.FirstOrDefault(c => rfcIdx >= 0 && rfcIdx < cells.Length && c != cells[rfcIdx] && !string.IsNullOrWhiteSpace(c))?.Trim() ?? rfcVal;
+                }
+                var context = localContext + " " + title;
+                var status = Status(localContext, article);
                 if (status == "Publicado") status = Status(title, article);
-                var statusColumn=headers is null?-1:Array.FindIndex(headers,h=>TextKey.Normalize(h).Contains("SITUACION")||TextKey.Normalize(h)=="ESTATUS");
-                if(statusColumn>=0&&statusColumn<cells.Length&&!string.IsNullOrWhiteSpace(cells[statusColumn])) status=cells[statusColumn];
-                var original=cells.Select((cell,i)=>new OriginalCell(i+1,headers is not null&&i<headers.Length?headers[i]:"Columna "+(i+1),cell)).ToArray();
-                tableRows.Add(new(ordinal,rowNumber,match.Rfc,name,article,"publicaciones-dof",status,date,null,
-                    new(){["numeroOficio"]=Office().Match(context).Value,["evidenciaClasificacion"]=context,["estadoOriginal"]=status},original));
+                var statusColumn = headers is null ? -1 : Array.FindIndex(headers, h => TextKey.Normalize(h).Contains("SITUACION") || TextKey.Normalize(h) == "ESTATUS");
+                if (statusColumn >= 0 && statusColumn < cells.Length && !string.IsNullOrWhiteSpace(cells[statusColumn])) status = cells[statusColumn];
+                var original = cells.Select((cell, i) => new OriginalCell(i + 1, headers is not null && i < headers.Length ? headers[i] : "Columna " + (i + 1), cell)).ToArray();
+                tableRows.Add(new(ordinal, rowNumber, rfcVal, name, article, "publicaciones-dof", status, date, null,
+                    new() { ["numeroOficio"] = Office().Match(context).Value, ["evidenciaClasificacion"] = context, ["estadoOriginal"] = status }, original));
             }
             // A table must be part of a publication, not a mere reference to legislation.
             var isList=relevant || (Regex.IsMatch(localContext,"listado|relaci[oó]n.*contribuyentes",RegexOptions.IgnoreCase)&&localArticle is not null);

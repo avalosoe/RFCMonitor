@@ -15,7 +15,7 @@ public sealed class EmailOutbox(AgentConfiguration configuration) : IExecutionNo
     {
         public ExecutionReport Report { get; set; } = new();
         public int Attempts { get; set; }
-        public DateTimeOffset NextAttemptUtc { get; set; }
+        public DateTimeOffset NextAttempt { get; set; }
         public string? LastError { get; set; }
     }
     private string DirectoryPath(AgentOptions o) => Path.Combine(o.DataDirectory, "outbox");
@@ -49,7 +49,7 @@ public sealed class EmailOutbox(AgentConfiguration configuration) : IExecutionNo
                 try { pending=JsonSerializer.Deserialize<Pending>(await File.ReadAllTextAsync(file,ct),AgentConfiguration.Json)
                     ?? throw new JsonException("Notificación vacía."); }
                 catch (JsonException) { File.Move(file,file+".invalid",true); continue; }
-                if (pending.NextAttemptUtc>DateTimeOffset.UtcNow) continue;
+                if (pending.NextAttempt>DateTimeOffset.Now) continue;
                 try
                 {
                     await SendAsync(o.Email,pending.Report,ct);
@@ -62,7 +62,7 @@ public sealed class EmailOutbox(AgentConfiguration configuration) : IExecutionNo
                 {
                     pending.Attempts++;
                     pending.LastError=ex.GetType().Name; // SMTP messages can contain addresses or authentication material.
-                    pending.NextAttemptUtc=DateTimeOffset.UtcNow.AddMinutes(Math.Min(360,Math.Pow(2,Math.Min(pending.Attempts,9))));
+                    pending.NextAttempt=DateTimeOffset.Now.AddMinutes(Math.Min(360,Math.Pow(2,Math.Min(pending.Attempts,9))));
                     AgentConfiguration.AtomicWrite(file,JsonSerializer.Serialize(pending,AgentConfiguration.Json));
                 }
             }

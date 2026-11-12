@@ -13,7 +13,7 @@ public sealed record SourceRow(int Table, int Row, string Rfc, string Name, stri
     DateOnly? PublicationDate, string? Entity, Dictionary<string, object?> Typed, IReadOnlyList<OriginalCell> Original,
     int HeaderRow = 0);
 public sealed record SourceDocument(string SourceKey, string ExternalKey, string Origin, string Article, string Listing,
-    string Url, string Hash, string EvidencePath, DateOnly? SourceDate, string DateScope, DateTimeOffset DetectedUtc,
+    string Url, string Hash, string EvidencePath, DateOnly? SourceDate, string DateScope, DateTimeOffset Detected,
     string ParserVersion, long? NoteCode = null, string? Title = null, string? Edition = null, string? Agency = null);
 /// <summary>Result of one immutable source-file import. Rows are the accepted rows exposed to the API.</summary>
 public sealed record ImportResult(long VersionId, bool Changed, long Rows, long ReadRows = 0, long RejectedRows = 0,
@@ -22,38 +22,49 @@ public sealed record QueryFilter(string? Article = null, string? Listing = null,
 public sealed record Appearance(long Id, long VersionId, string SourceId, string Origin, string Article, string Listing,
     string Rfc, string Name, string Status, DateOnly? PublicationDate, bool Historical, long? NoteCode, string Url,
     int Table, int Row, string DetailJson);
-public sealed record QueryHeader(long GenerationId, DateTimeOffset GeneratedUtc, string SourcesJson, string CoverageJson);
+public sealed record QueryHeader(long GenerationId, DateTimeOffset Generated, string SourcesJson, string CoverageJson);
 
 public static partial class Rfc
 {
     [GeneratedRegex(@"^[A-Z&Ñ]{3,4}[0-9]{6}[A-Z0-9]{3}$", RegexOptions.CultureInvariant)]
     private static partial Regex Pattern();
-    public static string Normalize(string value)
+
+    public static string Normalize(string? value)
     {
-        var result=new StringBuilder();
-        foreach(var character in value.Normalize(NormalizationForm.FormC).Trim().Trim('\uFEFF'))
+        if (string.IsNullOrWhiteSpace(value)) return "";
+        var result = new StringBuilder();
+        foreach (var character in value.Normalize(NormalizationForm.FormC).Trim().Trim('\uFEFF'))
         {
-            if(char.IsWhiteSpace(character) || character is '"' or '\'' or '´' or '`' or '‘' or '’' or '‚' or '‛' or '“' or '”' or '„' or '‟') continue;
-            result.Append(character=='¥' ? 'Ñ' : character);
+            if (char.IsWhiteSpace(character) || character is '"' or '\'' or '´' or '`' or '‘' or '’' or '‚' or '‛' or '“' or '”' or '„' or '‟') continue;
+            result.Append(character == '¥' ? 'Ñ' : character);
         }
-        return result.ToString().ToUpperInvariant();
+        var text = result.ToString().ToUpperInvariant();
+        return text.Length > 100 ? text[..100] : text;
     }
-    public static bool IsValid(string? value) => value is not null && Pattern().IsMatch(Normalize(value));
+
+    /// <summary>Valida si la cadena cumple estrictamente con el formato tributario del SAT (12 o 13 caracteres).</summary>
+    public static bool IsStrictRfc(string? value) => !string.IsNullOrWhiteSpace(value) && Pattern().IsMatch(Normalize(value));
+
+    /// <summary>Indica si el valor es un identificador no vacío almacenable en el sistema (no rechaza datos atípicos).</summary>
+    public static bool IsValid(string? value) => !string.IsNullOrWhiteSpace(value);
+
     public static string[] ValidateMany(IEnumerable<string?>? values)
     {
         if (values is null) throw new ArgumentException("Se requiere un arreglo de RFC.");
-        var result = new HashSet<string>(StringComparer.Ordinal);
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var index = 0;
         foreach (var value in values)
         {
-            if (!IsValid(value)) throw new ArgumentException($"RFC inválido en posición {index}.");
-            result.Add(Normalize(value!));
+            if (string.IsNullOrWhiteSpace(value))
+                throw new ArgumentException($"Valor inválido o vacío en posición {index}.");
+            result.Add(Normalize(value));
             index++;
         }
         if (result.Count == 0) throw new ArgumentException("El arreglo de RFC no puede estar vacío.");
         return result.Order(StringComparer.Ordinal).ToArray();
     }
 }
+
 public static class TextKey
 {
     public static string Normalize(string text) => string.Concat(text.Normalize(NormalizationForm.FormD)

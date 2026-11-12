@@ -37,7 +37,7 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
                         var updated = configuration.Load();
                         if (state.Running) return new(false, "Hay una ejecución activa; guarde y recargue al finalizar.");
                         options = updated; error = null;
-                        state.Next = ScheduleCalculator.Next(options.Schedule, DateTimeOffset.UtcNow); Persist(); break;
+                        state.Next = ScheduleCalculator.Next(options.Schedule, DateTimeOffset.Now); Persist(); break;
                     default: return new(false, "Comando desconocido.");
                 }
                 int pending;
@@ -62,9 +62,9 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
             {
                 options = configuration.Load();
                 AgentConfiguration.SecureDirectory(options.DataDirectory);
-                state.Next ??= ScheduleCalculator.Next(options.Schedule, DateTimeOffset.UtcNow);
+                state.Next ??= ScheduleCalculator.Next(options.Schedule, DateTimeOffset.Now);
                 if (options.Schedule.RunOnStartup) { state.Queued = true; state.Trigger = "arranque"; }
-                logger.LogInformation("Configuración cargada. SAT={SatEnabled}; DOF={DofEnabled}; programación={Mode}; próxima={NextRunUtc}; datos={DataDirectory}",
+                logger.LogInformation("Configuración cargada. SAT={SatEnabled}; DOF={DofEnabled}; programación={Mode}; próxima={NextRun}; datos={DataDirectory}",
                     options.SatEnabled, options.DofEnabled, options.Schedule.Mode, state.Next, options.DataDirectory);
             }
             catch (Exception ex) { error = SafeError.Describe(ex); logger.LogError(ex, "No se pudo cargar la configuración del Worker."); }
@@ -77,13 +77,13 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
             {
                 if (options is not null)
                 {
-                    if (options.Schedule.Enabled && state.Next <= DateTimeOffset.UtcNow)
+                    if (options.Schedule.Enabled && state.Next <= DateTimeOffset.Now)
                     { state.Queued = true; state.Trigger = "programada"; logger.LogInformation("Ejecución programada encolada."); }
                     if (state.Queued)
                     {
                         runOptions = options; trigger = state.Trigger;
                         state.Queued = false; state.Running = true;
-                        state.Next = ScheduleCalculator.Next(options.Schedule, DateTimeOffset.UtcNow);
+                        state.Next = ScheduleCalculator.Next(options.Schedule, DateTimeOffset.Now);
                         Persist();
                     }
                 }
@@ -115,7 +115,7 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
                 try
                 {
                     logger.LogInformation("Iniciando recolección SAT.");
-                    var results = await new SatCollector(downloader, repo).RunAsync(settings, ct);
+                    var results = await new SatCollector(downloader, repo, logger).RunAsync(settings, ct);
                     report.Fuentes.AddRange(results);
                     foreach (var source in results.Where(x => x.Resultado is "fallida" or "requiere-revision" || (x.Rechazados ?? 0) > 0))
                         logger.LogWarning("Fuente {Source} terminó como {Result}: {Detail}", source.Fuente, source.Resultado, source.Error);
@@ -141,10 +141,9 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                 catch (Exception ex) { logger.LogError(ex, "La recolección DOF terminó con error."); report.Fuentes.Add(new("dof:publicaciones", "fallida", 0, SafeError.Describe(ex))); }
             }
-            // A public generation is a certified snapshot.  A new file with a
-            // quarantined row, or any failed mandatory source, stays as a
-            // candidate and cannot silently mix dates with the previous snapshot.
-            if (report.Fuentes.Count > 0 && report.Fuentes.All(r => r.Resultado is "cambios" or "sin-cambios"))
+            var hasActiveGeneration = (await repo.GetHeaderAsync(ct)) is not null;
+            var anyChanges = report.Fuentes.Any(r => r.Resultado == "cambios");
+            if (report.Fuentes.Any(r => r.Resultado is "cambios" or "sin-cambios") && (anyChanges || !hasActiveGeneration))
             {
                 logger.LogInformation("Publicando nueva generación de datos.");
                 await repo.PublishGenerationAsync(ct);
@@ -160,7 +159,7 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
         }
         finally
         {
-            report.FinUtc = DateTimeOffset.UtcNow;
+            report.Fin = DateTimeOffset.Now;
             using var finish = new CancellationTokenSource(TimeSpan.FromSeconds(20));
             var history = Path.Combine(settings.DataDirectory, "executions", report.EjecucionId.ToString("N") + ".json");
             AgentConfiguration.AtomicWrite(history, JsonSerializer.Serialize(report, AgentConfiguration.Json));

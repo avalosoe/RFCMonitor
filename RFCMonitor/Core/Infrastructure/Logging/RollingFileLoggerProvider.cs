@@ -20,15 +20,15 @@ public sealed class RollingFileLoggerProvider(Func<string> directory, string pre
             {
                 var directoryPath = directory();
                 Directory.CreateDirectory(directoryPath);
-                var utcToday = DateOnly.FromDateTime(DateTime.UtcNow);
-                if (maintainedDay != utcToday)
+                var localToday = DateOnly.FromDateTime(DateTime.Now);
+                if (maintainedDay != localToday)
                 {
-                    Maintain(directoryPath, utcToday);
-                    maintainedDay = utcToday;
+                    Maintain(directoryPath, localToday);
+                    maintainedDay = localToday;
                 }
-                var path = Path.Combine(directoryPath, $"{prefix}-{utcToday:yyyyMMdd}.log");
+                var path = Path.Combine(directoryPath, $"{prefix}-{localToday:yyyyMMdd}.log");
                 var detail = exception is null ? "" : Environment.NewLine + exception;
-                var line = $"{DateTimeOffset.UtcNow:O} [{level}] {category} ({eventId.Id}) {message}{detail}{Environment.NewLine}";
+                var line = $"{DateTimeOffset.Now:O} [{level}] {category} ({eventId.Id}) {message}{detail}{Environment.NewLine}";
                 File.AppendAllText(path, line);
             }
         }

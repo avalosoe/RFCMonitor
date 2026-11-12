@@ -14,7 +14,7 @@ public sealed class DofCollector(SafeDownloader downloader,SqlRepository reposit
     public async Task<IReadOnlyList<SourceResult>> RunAsync(AgentOptions options,CancellationToken ct)
     {
         var results=new List<SourceResult>();
-        var today=DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow,Scheduling.ScheduleCalculator.Zone(options.Schedule.TimeZone)).DateTime);
+        var today=DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(DateTimeOffset.Now,Scheduling.ScheduleCalculator.Zone(options.Schedule.TimeZone)).DateTime);
         var days=await repository.PendingDofDaysAsync(options.DofStartDate,today,options.DofLookbackDays,options.DofDaysPerCycle,ct);
         foreach(var date in days)
         {
@@ -59,24 +59,29 @@ public sealed class DofCollector(SafeDownloader downloader,SqlRepository reposit
                                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                                 catch (Exception ex) { await repository.RecordAdjunctAsync(code, url, "pendiente", null, SafeError.Describe(ex), ct); }
                             }
-                            if (parsed.Relevant && parsed.Attachments.Count > 0)
-                                parsed = parsed with { NeedsReview = true, Reason = "Nota con anexos PDF/imagen: extracción pendiente de revisión." };
-                            if(parsed.NeedsReview)
+                            if (parsed.Relevant && parsed.Rows.Count > 0)
+                            {
+                                var source=new SourceDocument("dof:publicaciones",code.ToString(CultureInfo.InvariantCulture),"DOF",
+                                    parsed.Rows.Select(r=>r.Article).Distinct().Count()==1?parsed.Rows[0].Article:"69",
+                                    "publicaciones-dof",download.Url,download.Hash,download.Path,published,"nota",DateTimeOffset.Now,"dof-v1",
+                                    code,title,String(value,"codEdicion"),agency);
+                                var result=await repository.ImportAsync(source,AsAsync(parsed.Rows,ct),ct);
+                                if(result.Changed)changes++;
+                                count+=result.Rows;
+                                await repository.ClearDofPendingAsync(code,ct);
+                            }
+                            else if(parsed.NeedsReview)
                             {
                                 complete=false;
                                 await repository.SaveDofPendingAsync(code,date,parsed.Reason??"Extracción pendiente.",ct);
                                 errors.Add($"Nota {code}: extracción pendiente.");
                                 continue;
                             }
-                            if(!parsed.Relevant) {await repository.ClearDofPendingAsync(code,ct);continue;}
-                            var source=new SourceDocument("dof:publicaciones",code.ToString(CultureInfo.InvariantCulture),"DOF",
-                                parsed.Rows.Select(r=>r.Article).Distinct().Count()==1?parsed.Rows[0].Article:"69",
-                                "publicaciones-dof",download.Url,download.Hash,download.Path,published,"nota",DateTimeOffset.UtcNow,"dof-v1",
-                                code,title,String(value,"codEdicion"),agency);
-                            var result=await repository.ImportAsync(source,AsAsync(parsed.Rows,ct),ct);
-                            if(result.Changed)changes++;
-                            count+=result.Rows;
-                            await repository.ClearDofPendingAsync(code,ct);
+                            else if(!parsed.Relevant)
+                            {
+                                await repository.ClearDofPendingAsync(code,ct);
+                                continue;
+                            }
                         }
                         catch(OperationCanceledException) when(ct.IsCancellationRequested) {throw;}
                         catch(Exception ex)

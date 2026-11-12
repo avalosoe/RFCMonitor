@@ -19,6 +19,24 @@ public sealed class AgentConfiguration
     {
         var value = File.Exists(FilePath) ? JsonSerializer.Deserialize<AgentOptions>(File.ReadAllText(FilePath), Json)
             ?? throw new InvalidDataException("Configuración vacía.") : new AgentOptions();
+
+        // Normalizar de inmediato cualquier referencia previa a variables UTC para usar la fecha/hora local
+        if (value.Email is not null)
+        {
+            if (value.Email.SubjectTemplate?.Contains("Utc", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                value.Email.SubjectTemplate = System.Text.RegularExpressions.Regex.Replace(value.Email.SubjectTemplate, @"\{\{\s*InicioUtc\s*\}\}", "{{Inicio}}", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                value.Email.SubjectTemplate = System.Text.RegularExpressions.Regex.Replace(value.Email.SubjectTemplate, @"\{\{\s*FinUtc\s*\}\}", "{{Fin}}", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                value.Email.SubjectTemplate = System.Text.RegularExpressions.Regex.Replace(value.Email.SubjectTemplate, @"\{\{\s*FechaUtc\s*\}\}", "{{Fecha}}", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            }
+            if (value.Email.HtmlTemplate?.Contains("Utc", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                value.Email.HtmlTemplate = System.Text.RegularExpressions.Regex.Replace(value.Email.HtmlTemplate, @"\{\{\s*InicioUtc\s*\}\}", "{{Inicio}}", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                value.Email.HtmlTemplate = System.Text.RegularExpressions.Regex.Replace(value.Email.HtmlTemplate, @"\{\{\s*FinUtc\s*\}\}", "{{Fin}}", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                value.Email.HtmlTemplate = System.Text.RegularExpressions.Regex.Replace(value.Email.HtmlTemplate, @"\{\{\s*FechaUtc\s*\}\}", "{{Fecha}}", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            }
+        }
+
         Validate(value);
         return value;
     }
@@ -69,7 +87,7 @@ public sealed class AgentConfiguration
             throw new ArgumentException("Límites de descarga inválidos.");
         if (value.DofLookbackDays is < 1 or > 3650 || value.DofDaysPerCycle is < 1 or > 3660)
             throw new ArgumentException("Rangos DOF inválidos.");
-        if (value.DofStartDate < new DateOnly(1900, 1, 1) || value.DofStartDate > DateOnly.FromDateTime(DateTime.UtcNow))
+        if (value.DofStartDate < new DateOnly(1900, 1, 1) || value.DofStartDate > DateOnly.FromDateTime(DateTime.Now))
             throw new ArgumentException("Fecha inicial DOF fuera del rango permitido.");
         if (!string.IsNullOrWhiteSpace(value.ConnectionString)) _ = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(value.ConnectionString);
         if (value.EnabledSatSources.Any(k => !SourceCatalog.Sat.Any(s => s.Key == k)))
@@ -88,14 +106,17 @@ public sealed class AgentConfiguration
     {
         Directory.CreateDirectory(path);
         if (!OperatingSystem.IsWindows()) return;
-        var acl = new DirectorySecurity();
-        acl.SetAccessRuleProtection(true, false);
+        // Keep the owner, inheritance and existing access rules. The service used
+        // to replace the complete ACL on every startup, which removed permissions
+        // assigned by the administrator and could make NetworkService the owner.
+        var directory = new DirectoryInfo(path);
+        var acl = directory.GetAccessControl();
         foreach (var sid in new[] { WindowsIdentity.GetCurrent().User!,
             new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
             new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
             new SecurityIdentifier(WellKnownSidType.NetworkServiceSid, null) })
-            acl.AddAccessRule(new FileSystemAccessRule(sid, FileSystemRights.FullControl,
+            acl.SetAccessRule(new FileSystemAccessRule(sid, FileSystemRights.FullControl,
                 InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
-        new DirectoryInfo(path).SetAccessControl(acl);
+        directory.SetAccessControl(acl);
     }
 }

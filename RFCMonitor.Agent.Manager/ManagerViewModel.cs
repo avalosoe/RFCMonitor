@@ -247,7 +247,7 @@ public sealed class ManagerViewModel : INotifyPropertyChanged
                     UpdatePreview();
                     Message = "Vista previa segura actualizada; no carga imágenes ni recursos externos."; break;
                 case "default-email":
-                    Options.Email.SubjectTemplate = "MonitorRFC | Resumen {{Resultado}} | {{InicioUtc}}";
+                    Options.Email.SubjectTemplate = "MonitorRFC | Resumen {{Resultado}} | {{Inicio}}";
                     Options.Email.HtmlTemplate = EmailTemplateDefaults.SummaryHtml;
                     UpdatePreview();
                     PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Options)));

@@ -1,6 +1,8 @@
 using System.Diagnostics;
+using System.IO.Compression;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.AspNetCore.ResponseCompression;
 using MonitorRFC.Application;
 using MonitorRFC.Infrastructure.Logging;
 using MonitorRFC.Infrastructure.Persistence;
@@ -11,7 +13,15 @@ builder.Logging.AddProvider(new RollingFileLoggerProvider(() => apiLogDirectory,
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
 builder.Services.AddProblemDetails();
-builder.Services.AddResponseCompression(o => o.EnableForHttps = true);
+builder.Services.AddResponseCompression(o =>
+{
+    // The global RFC export can be large. Compression is negotiated through
+    // Accept-Encoding, so clients that do not support it keep receiving JSON.
+    o.EnableForHttps = true;
+    o.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(["application/problem+json"]);
+});
+builder.Services.Configure<BrotliCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
+builder.Services.Configure<GzipCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
 builder.Services.AddSingleton<IClock, SystemClock>();
 builder.Services.AddScoped<SqlRepository>(_ => new SqlRepository(builder.Configuration.GetConnectionString("MonitorRFC") ?? ""));
 builder.Services.AddScoped<IRfcQueryService>(s => s.GetRequiredService<SqlRepository>());
