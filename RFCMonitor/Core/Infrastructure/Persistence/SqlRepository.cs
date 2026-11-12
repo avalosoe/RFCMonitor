@@ -13,8 +13,9 @@ namespace MonitorRFC.Infrastructure.Persistence;
 public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
 {
     private readonly Func<string> connectionString;
-    public SqlRepository(AgentConfiguration configuration) => connectionString = () => AgentConfiguration.GetConnection(configuration.Load());
-    public SqlRepository(string connectionString) => this.connectionString = () => connectionString;
+    private readonly ILogger? logger;
+    public SqlRepository(AgentConfiguration configuration, ILogger? logger = null) { this.connectionString = () => AgentConfiguration.GetConnection(configuration.Load()); this.logger = logger; }
+    public SqlRepository(string connectionString, ILogger? logger = null) { this.connectionString = () => connectionString; this.logger = logger; }
     private SqlConnection? leaseConnection;
     private Guid owner;
     private long token;
@@ -175,8 +176,13 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                     count++;
                 }
             }
-            await FlushAsync(c,transaction,batch,isDocument?"dbo.DocumentoCelda":"dbo.RegistroFuente",ct);
-            await FlushAsync(c,transaction,rawRows,"dbo.FilaFuente",ct);
+            logger?.LogInformation("Iniciando inserción masiva en {Table} ({Count:N0} filas)...", isDocument ? "dbo.DocumentoCelda" : "dbo.RegistroFuente", count);
+            await FlushAsync(c,transaction,batch,isDocument?"dbo.DocumentoCelda":"dbo.RegistroFuente",ct,logger);
+            logger?.LogInformation("Inserción completada en {Table}.", isDocument ? "dbo.DocumentoCelda" : "dbo.RegistroFuente");
+
+            logger?.LogInformation("Iniciando inserción masiva en dbo.FilaFuente ({Count:N0} filas)...", rawRows.Rows.Count);
+            await FlushAsync(c,transaction,rawRows,"dbo.FilaFuente",ct,logger);
+            logger?.LogInformation("Inserción completada en dbo.FilaFuente.");
             if((isDocument ? count : read)==0) throw new InvalidDataException("La publicación no contiene filas verificables.");
             // FilaFuente preserves every source row, including rejected rows.
             // RegistroFuente is the consolidated RFC projection for valid rows.
@@ -240,12 +246,25 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
         P(cmd,"@Url",SqlDbType.NVarChar,document.Url,2048);P(cmd,"@Unchanged",SqlDbType.Bit,unchanged);
         await cmd.ExecuteNonQueryAsync(ct);
     }
-    private static async Task FlushAsync(SqlConnection c,SqlTransaction tx,DataTable batch,string table,CancellationToken ct)
+    private static async Task FlushAsync(SqlConnection c,SqlTransaction tx,DataTable batch,string table,CancellationToken ct, ILogger? logger = null)
     {
         if(batch.Rows.Count==0)return;
-        using var bulk=new SqlBulkCopy(c,SqlBulkCopyOptions.CheckConstraints,tx) { DestinationTableName=table,BatchSize=0,BulkCopyTimeout=600,EnableStreaming=true };
+        var totalRows = batch.Rows.Count;
+        using var bulk=new SqlBulkCopy(c,SqlBulkCopyOptions.TableLock,tx) 
+        { 
+            DestinationTableName=table,
+            BatchSize=25000,
+            BulkCopyTimeout=600,
+            NotifyAfter=25000,
+            EnableStreaming=true 
+        };
+        if (logger is not null)
+        {
+            bulk.SqlRowsCopied += (s, e) => logger.LogInformation("  [BulkCopy] {Table}: {Rows:N0} / {Total:N0} filas insertadas en BD...", table, e.RowsCopied, totalRows);
+        }
         foreach(DataColumn col in batch.Columns) bulk.ColumnMappings.Add(col.ColumnName,col.ColumnName);
-        await bulk.WriteToServerAsync(batch,ct); batch.Clear();
+        await bulk.WriteToServerAsync(batch,ct); 
+        batch.Clear();
     }
     public async Task<ImportResult?> CheckUnchangedByDateAsync(string sourceKey, string externalKey, DateOnly? sourceDate, string url, CancellationToken ct)
     {

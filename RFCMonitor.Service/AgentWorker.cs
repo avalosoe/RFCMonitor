@@ -100,7 +100,7 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
     {
         var report = new ExecutionReport { Disparador = trigger };
         using var scope = logger.BeginScope("EjecucionId={EjecucionId}", report.EjecucionId);
-        var repo = new SqlRepository(AgentConfiguration.GetConnection(settings));
+        var repo = new SqlRepository(AgentConfiguration.GetConnection(settings), logger);
         try
         {
             logger.LogInformation("Inicio de ejecución. Disparador={Trigger}; SAT={SatEnabled}; DOF={DofEnabled}", trigger, settings.SatEnabled, settings.DofEnabled);
