@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.ResponseCompression;
 using MonitorRFC.Application;
 using MonitorRFC.Infrastructure.Logging;
 using MonitorRFC.Infrastructure.Persistence;
+using MonitorRFC.Infrastructure.Sources;
 
 var builder = WebApplication.CreateBuilder(args);
 var apiLogDirectory = Path.Combine(AppContext.BaseDirectory, "log");
@@ -23,6 +24,7 @@ builder.Services.AddResponseCompression(o =>
 builder.Services.Configure<BrotliCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
 builder.Services.Configure<GzipCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
 builder.Services.AddSingleton<IClock, SystemClock>();
+builder.Services.AddSingleton<SafeDownloader>();
 builder.Services.AddScoped<SqlRepository>(_ => new SqlRepository(builder.Configuration.GetConnectionString("MonitorRFC") ?? ""));
 builder.Services.AddScoped<IRfcQueryService>(s => s.GetRequiredService<SqlRepository>());
 builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = 8 * 1024 * 1024);

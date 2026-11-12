@@ -23,6 +23,7 @@ DROP PROCEDURE IF EXISTS dbo.AplicarCambiosSAT;
 DROP PROCEDURE IF EXISTS dbo.AplicarPublicacionDOF;
 DROP PROCEDURE IF EXISTS dbo.ConsultarContribuyentesVigentes;
 DROP PROCEDURE IF EXISTS dbo.ConsultarContribuyenteHistorial;
+DROP PROCEDURE IF EXISTS dbo.ConsultarHistorialRfcs;
 DROP PROCEDURE IF EXISTS dbo.ConsultarEstatusGeneral;
 DROP PROCEDURE IF EXISTS dbo.ObtenerDocumentoTecnico69;
 DROP PROCEDURE IF EXISTS dbo.PublicarGeneracion;

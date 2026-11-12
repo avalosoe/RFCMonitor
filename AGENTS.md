@@ -61,31 +61,42 @@ A continuación se documenta el catálogo completo de endpoints expuestos por la
 ### 4.2. Catálogo y Configuración de Fuentes
 | Método | Ruta | Descripción | Parámetros / Body |
 | :--- | :--- | :--- | :--- |
-| `GET` | `/api/v1/articulos` | Devuelve la lista de artículos fiscales soportados (`69`, `69-b`, `69-b-bis`). | Ninguno. |
+| `GET` | `/api/v1/articulos` | Devuelve la lista de artículos fiscales soportados (`69`, `69-b`, `69-b-bis`, `49-bis`). | Ninguno. |
 | `GET` | `/api/v1/articulos/{articulo}/listados` | Obtiene los listados y supuestos disponibles para un artículo dado (incluye orígenes SAT y Publicaciones DOF). | Path: `articulo` (ej. `69-b`). |
-| `GET` | `/api/v1/fuentes/estado` | Devuelve el estado operativo y de certificación por fuente: filas leídas, aceptadas, rechazadas, última incorporación y cobertura SAT/SIDOF. | Ninguno. |
+| `GET` | `/api/v1/tipos` | Expone el catálogo oficial de tipos fiscales numéricos (1 al N) asignados a cada artículo y listado. | Ninguno. |
+| `GET` | `/api/v1/tipos/{tipoId}` | Consulta la definición y detalle de un tipo fiscal numérico específico (1..N). | Path: `tipoId` (int, ej. `15`). |
+| `GET` | `/api/v1/fuentes/estado`<br>*(Alias: `/api/v1/descargas/estado`)* | Devuelve el estado operativo detallado de las descargas: última fecha de publicación portal SAT, último intento de ejecución, última descarga exitosa, métricas de registros (vigentes, nuevos, modificados, sin cambios) y cobertura DOF. | Ninguno. |
 
 ### 4.3. Consultas de Contribuyentes y RFCs
 | Método | Ruta | Descripción | Parámetros / Body |
 | :--- | :--- | :--- | :--- |
-| `GET` | `/api/v1/rfcs` | Consulta consolidada de todos los RFCs y sus apariciones publicadas mediante streaming JSON de alta eficiencia. | Query opcional: `incluirHistorial` (bool, default `false`). |
-| `POST` | `/api/v1/rfcs/consultar` | Consulta masiva consolidada, con filtro opcional por artículo/listado. | Query opcional: `articulo`, `listado`, `incluirHistorial` (bool).<br>Body JSON: Array de strings `["RFC1", "RFC2"]`. |
-| `GET` | `/api/v1/rfcs/{rfc}/estatus` | Consulta vigente de un RFC en todos los artículos y fuentes publicadas. | Path: `rfc`. |
-| `GET` | `/api/v1/rfcs/{rfc}/historial` | Consulta todas las apariciones históricas SAT y DOF de un RFC. | Path: `rfc`.<br>Query opcional: `articulo`, `listado`. |
+| `GET` | `/api/v1/contribuyentes/global`<br>*(Alias: `/api/v1/rfcs/global`)* | Listado global que involucra a todos los tipos y artículos, proyectando todas las columnas relacionales reales mediante streaming JSON ultrarrápido y comprimido (Brotli/Gzip). | Query opcional: `tipoId` (int), `articulo`, `listado`, `situacion`. |
+| `GET` | `/api/v1/tipos/{tipoId}/contribuyentes` | Consulta de contribuyentes asociados exclusivamente a un tipo fiscal numérico. | Path: `tipoId` (int, ej. `15`).<br>Query opcional: `incluirHistorial` (bool). |
+| `POST` | `/api/v1/rfcs/estado` | Consulta masiva consolidada para un arreglo de RFCs; devuelve en qué artículos aparece, fecha efectiva más reciente, folios/oficios SAT y DOF, montos, entidad federativa y etapas fiscales. | Query opcional: `articulo`, `listado`.<br>Body JSON: `["RFC1", "RFC2"]` o `{ "rfcs": ["RFC1"] }`. |
+| `POST` | `/api/v1/rfcs/historial` | Historial cronológico masivo para un arreglo de RFCs, mostrando su trazabilidad de movimientos y cambios de estatus a lo largo del tiempo. | Query opcional: `articulo`, `listado`.<br>Body JSON: `["RFC1", "RFC2"]` o `{ "rfcs": ["RFC1"] }`. |
+| `GET` | `/api/v1/rfcs` | Consulta consolidada de todos los RFCs y sus apariciones publicadas mediante streaming JSON. | Query opcional: `incluirHistorial` (bool, default `false`). |
+| `POST` | `/api/v1/rfcs/consultar` | Consulta masiva consolidada; puede limitarse a un artículo o listado. Soporta array directo o formato objeto legacy. | Query opcional: `articulo`, `listado`, `incluirHistorial` (bool).<br>Body JSON: `["RFC1", "RFC2"]` o `{ "rfcs": ["RFC1"] }`. |
+| `GET` | `/api/v1/rfcs/{rfc}/estatus` | Estatus general vigente de un RFC en todos los artículos y fuentes certificadas. | Path: `rfc`. |
+| `GET` | `/api/v1/rfcs/{rfc}/historial` | Historial de apariciones SAT y DOF de un RFC, con filtro opcional por artículo/listado. | Path: `rfc`.<br>Query opcional: `articulo`, `listado`. |
 | `GET` | `/api/v1/articulos/{articulo}/contribuyentes` | Consulta de contribuyentes asociados exclusivamente a un artículo específico. | Path: `articulo`.<br>Query opcional: `incluirHistorial` (bool). |
 | `GET` | `/api/v1/articulos/{articulo}/listados/{listado}/contribuyentes` | Consulta de contribuyentes filtrando por artículo y listado concreto (ej. `definitivos`, `presuntos`, etc.). | Path: `articulo`, `listado`.<br>Query opcional: `incluirHistorial` (bool). |
 
-### 4.4. Documentos Técnicos
+### 4.4. Sincronización On-Demand del DOF
+| Método | Ruta | Descripción | Parámetros / Body |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/v1/dof/sincronizar`<br>*(Alias: `/api/v1/dof/descargar`)* | Ejecuta la sincronización e ingesta manual de publicaciones del DOF para el periodo especificado, insertando en BD mediante tabla temporal `#tempdb` sin UNION y devolviendo resumen agrupado por tipo (encontrados, nuevos, actualizados). | Query o Body JSON: `fechaInicio` (obligatorio, `yyyy-MM-dd`), `fechaFin` (obligatorio, `yyyy-MM-dd`), `articulo` (opcional). |
+
+### 4.5. Documentos Técnicos
 | Método | Ruta | Descripción | Parámetros / Body |
 | :--- | :--- | :--- | :--- |
 | `GET` | `/api/v1/articulos/69/documento-tecnico`<br>*(Alias: `/api/v1/documentos/69/documento-tecnico`)* | Obtiene la matriz de celdas e información técnica del anexo/documento del artículo 69 para la generación actual. | Ninguno. |
 
-### 4.5. Endpoints Heredados (Compatibilidad Retroactiva)
+### 4.6. Endpoints Heredados (Compatibilidad Retroactiva)
 Se mantienen para garantizar compatibilidad con consumidores de las aplicaciones anteriores (`EdosSatScraper` y `RfcStatusApi`):
 | Método | Ruta | Mapeo / Equivalente | Formato de Entrada |
 | :--- | :--- | :--- | :--- |
 | `GET` | `/api/EdosEfos/all69` | `GET /api/v1/rfcs` | Query opcional: `incluirHistorial`. |
-| `POST` | `/api/Rfc/Listado69` | `POST /api/v1/rfcs/consultar` | Body JSON: `{ "rfcs": ["RFC1", "RFC2"] }`.<br>Query opcional: `incluirHistorial`. |
+| `POST` | `/api/Rfc/Listado69` | `POST /api/v1/rfcs/consultar` o `/api/v1/rfcs/estado` | Body JSON: `{ "rfcs": ["RFC1", "RFC2"] }` o array directo.<br>Query opcional: `incluirHistorial`. |
 
 ---
 

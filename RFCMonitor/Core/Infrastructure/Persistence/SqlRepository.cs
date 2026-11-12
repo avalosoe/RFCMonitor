@@ -10,6 +10,7 @@ using MonitorRFC.Application;
 using MonitorRFC.Contracts;
 using MonitorRFC.Domain;
 using MonitorRFC.Infrastructure.Configuration;
+using MonitorRFC.Infrastructure.Sources;
 
 namespace MonitorRFC.Infrastructure.Persistence;
 
@@ -787,5 +788,633 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
         P(cmd, "@Path", SqlDbType.NVarChar, path, 2048);
         P(cmd, "@Reason", SqlDbType.NVarChar, reason, 2000);
         await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    public async IAsyncEnumerable<GlobalContribuyenteDto> ConsultarGlobalVigentesAsync(
+        string? articulo, string? listado, string? situacion, [EnumeratorCancellation] CancellationToken ct)
+    {
+        await using var c = await OpenAsync(ct);
+        using var cmd = Command(c, "dbo.ConsultarContribuyentesVigentes");
+        cmd.CommandType = CommandType.StoredProcedure;
+        P(cmd, "@Articulo", SqlDbType.VarChar, articulo, 16);
+        P(cmd, "@Listado", SqlDbType.VarChar, listado, 100);
+        P(cmd, "@Situacion", SqlDbType.NVarChar, situacion, 200);
+        P(cmd, "@FiltrarRfc", SqlDbType.Bit, false);
+        var table = new DataTable();
+        table.Columns.Add("Rfc", typeof(string));
+        table.Columns.Add("OrdenEntrada", typeof(int));
+        var p = cmd.Parameters.Add("@Rfcs", SqlDbType.Structured);
+        p.TypeName = "dbo.RfcInput";
+        p.Value = table;
+
+        await using var r = await cmd.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct);
+        while (await r.ReadAsync(ct))
+        {
+            var rfc = r.GetString(1);
+            var razon = r.GetString(2);
+            var art = r.GetString(3);
+            var list = r.GetString(4);
+            var sit = r.GetString(5);
+            var tipoId = CatalogoTipos.ResolverTipoId(art, list, sit);
+
+            yield return new GlobalContribuyenteDto(
+                ContribuyenteId: Convert.ToInt64(r.GetValue(0)),
+                TipoId: tipoId,
+                Rfc: rfc,
+                RazonSocial: razon,
+                Articulo: art,
+                Listado: list,
+                Situacion: sit,
+                FechaEfectiva: GetDateOnly(r, 6),
+                OrigenUltimaModificacion: r.GetString(7),
+                FechaModificacion: r.GetDateTime(8),
+                TipoPersona: GetString(r, 9),
+                EntidadFederativa: GetString(r, 10),
+                Monto: GetDecimal(r, 11),
+                Ejercicio: GetString(r, 12),
+                Periodo: GetString(r, 13),
+                Motivo: GetString(r, 14),
+                FechaCancelacion: GetDateOnly(r, 15),
+                FechaAutorizacion: GetDateOnly(r, 16),
+                Administracion: GetString(r, 17),
+                NumeroOficioSAT: GetString(r, 18),
+                FechaOficioSAT: GetDateOnly(r, 19),
+                NumeroOficioDOF: GetString(r, 20),
+                FechaOficioDOF: GetDateOnly(r, 21),
+                PresuncionOficioSAT: GetString(r, 22),
+                PresuncionFechaSAT: GetDateOnly(r, 23),
+                PresuncionOficioDOF: GetString(r, 24),
+                PresuncionFechaDOF: GetDateOnly(r, 25),
+                DesvirtuadoOficioSAT: GetString(r, 26),
+                DesvirtuadoFechaSAT: GetDateOnly(r, 27),
+                DesvirtuadoOficioDOF: GetString(r, 28),
+                DesvirtuadoFechaDOF: GetDateOnly(r, 29),
+                DefinitivoOficioSAT: GetString(r, 30),
+                DefinitivoFechaSAT: GetDateOnly(r, 31),
+                DefinitivoOficioDOF: GetString(r, 32),
+                DefinitivoFechaDOF: GetDateOnly(r, 33),
+                SentenciaOficioSAT: GetString(r, 34),
+                SentenciaFechaSAT: GetDateOnly(r, 35),
+                SentenciaOficioDOF: GetString(r, 36),
+                SentenciaFechaDOF: GetDateOnly(r, 37),
+                CodNotaDOF: GetInt64(r, 38),
+                UrlOrigenDOF: GetString(r, 39),
+                UltimaDescarga: r.IsDBNull(40) ? null : r.GetDateTime(40)
+            );
+        }
+    }
+
+    private static DateOnly? GetDateOnly(SqlDataReader r, int i) => r.IsDBNull(i) ? null : DateOnly.FromDateTime(r.GetDateTime(i));
+    private static decimal? GetDecimal(SqlDataReader r, int i) => r.IsDBNull(i) ? null : r.GetDecimal(i);
+    private static long? GetInt64(SqlDataReader r, int i) => r.IsDBNull(i) ? null : Convert.ToInt64(r.GetValue(i));
+    private static string? GetString(SqlDataReader r, int i) => r.IsDBNull(i) ? null : r.GetString(i);
+
+    public async Task<RfcEstadoResponse> ConsultarEstadoRfcsAsync(string[] rfcs, string? articulo, string? listado, CancellationToken ct)
+    {
+        var normalizedRfcs = Rfc.ValidateMany(rfcs);
+        var table = new DataTable();
+        table.Columns.Add("Rfc", typeof(string));
+        table.Columns.Add("OrdenEntrada", typeof(int));
+        for (var i = 0; i < normalizedRfcs.Length; i++) table.Rows.Add(normalizedRfcs[i], i);
+
+        await using var c = await OpenAsync(ct);
+        using var cmd = Command(c, "dbo.ConsultarContribuyentesVigentes");
+        cmd.CommandType = CommandType.StoredProcedure;
+        P(cmd, "@Articulo", SqlDbType.VarChar, articulo, 16);
+        P(cmd, "@Listado", SqlDbType.VarChar, listado, 100);
+        P(cmd, "@Situacion", SqlDbType.NVarChar, null);
+        P(cmd, "@FiltrarRfc", SqlDbType.Bit, true);
+        var p = cmd.Parameters.Add("@Rfcs", SqlDbType.Structured);
+        p.TypeName = "dbo.RfcInput";
+        p.Value = table;
+
+        var publicacionesPorRfc = new Dictionary<string, List<RfcPublicacionVigente>>(StringComparer.OrdinalIgnoreCase);
+        var razonSocialPorRfc = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        await using (var r = await cmd.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct))
+        {
+            while (await r.ReadAsync(ct))
+            {
+                var rfc = r.GetString(1);
+                var razon = r.GetString(2);
+                if (!razonSocialPorRfc.ContainsKey(rfc)) razonSocialPorRfc[rfc] = razon;
+
+                var art = r.GetString(3);
+                var list = r.GetString(4);
+                var sit = r.GetString(5);
+                var fechaEfectiva = GetDateOnly(r, 6);
+                var origen = r.GetString(7);
+                var fechaMod = r.GetDateTime(8);
+                var tipoPersona = GetString(r, 9);
+                var entidad = GetString(r, 10);
+                var monto = GetDecimal(r, 11);
+                var ejercicio = GetString(r, 12);
+                var periodo = GetString(r, 13);
+                var motivo = GetString(r, 14);
+                var fechaCancel = GetDateOnly(r, 15);
+                var fechaAuto = GetDateOnly(r, 16);
+                var admin = GetString(r, 17);
+                var oficioSat = GetString(r, 18);
+                var fechaSat = GetDateOnly(r, 19);
+                var oficioDof = GetString(r, 20);
+                var fechaDof = GetDateOnly(r, 21);
+
+                var presOficioSat = GetString(r, 22);
+                var presFechaSat = GetDateOnly(r, 23);
+                var presOficioDof = GetString(r, 24);
+                var presFechaDof = GetDateOnly(r, 25);
+
+                var desvOficioSat = GetString(r, 26);
+                var desvFechaSat = GetDateOnly(r, 27);
+                var desvOficioDof = GetString(r, 28);
+                var desvFechaDof = GetDateOnly(r, 29);
+
+                var defOficioSat = GetString(r, 30);
+                var defFechaSat = GetDateOnly(r, 31);
+                var defOficioDof = GetString(r, 32);
+                var defFechaDof = GetDateOnly(r, 33);
+
+                var sentOficioSat = GetString(r, 34);
+                var sentFechaSat = GetDateOnly(r, 35);
+                var sentOficioDof = GetString(r, 36);
+                var sentFechaDof = GetDateOnly(r, 37);
+
+                var codNota = GetInt64(r, 38);
+                var urlOrigen = GetString(r, 39);
+
+                var etapas = new RfcEtapas(
+                    new EtapaOficio(presOficioSat, presFechaSat, presOficioDof, presFechaDof),
+                    new EtapaOficio(desvOficioSat, desvFechaSat, desvOficioDof, desvFechaDof),
+                    new EtapaOficio(defOficioSat, defFechaSat, defOficioDof, defFechaDof),
+                    new EtapaOficio(sentOficioSat, sentFechaSat, sentOficioDof, sentFechaDof)
+                );
+
+                var tipoId = CatalogoTipos.ResolverTipoId(art, list, sit);
+
+                var pub = new RfcPublicacionVigente(
+                    tipoId, art, list, sit, fechaEfectiva, origen, tipoPersona, entidad,
+                    monto, ejercicio, periodo, motivo, fechaCancel, fechaAuto, admin,
+                    oficioSat, fechaSat, oficioDof, fechaDof, etapas, codNota, urlOrigen, fechaMod
+                );
+
+                if (!publicacionesPorRfc.TryGetValue(rfc, out var lista))
+                {
+                    lista = [];
+                    publicacionesPorRfc[rfc] = lista;
+                }
+                lista.Add(pub);
+            }
+        }
+
+        var contribuyentes = new List<RfcEstadoContribuyente>(normalizedRfcs.Length);
+        var encontrados = 0;
+
+        foreach (var rfc in normalizedRfcs)
+        {
+            if (publicacionesPorRfc.TryGetValue(rfc, out var pubs) && pubs.Count > 0)
+            {
+                encontrados++;
+                var arts = pubs.Select(p => p.Articulo).Distinct().OrderBy(a => a).ToArray();
+                var reciente = pubs.Where(p => p.FechaEfectiva.HasValue).MaxBy(p => p.FechaEfectiva);
+                var fechaMasReciente = reciente?.FechaEfectiva;
+                var origenMasReciente = reciente?.Origen ?? pubs.MaxBy(p => p.FechaModificacion)?.Origen;
+
+                var esDef = pubs.Any(p => p.Articulo == "69-b" && TextKey.Normalize(p.Situacion).Contains("DEFINITIVO"));
+                var esPres = pubs.Any(p => p.Articulo == "69-b" && TextKey.Normalize(p.Situacion).Contains("PRESUNTO"));
+                var esDesv = pubs.Any(p => p.Articulo == "69-b" && TextKey.Normalize(p.Situacion).Contains("DESVIRTUADO"));
+                var esSent = pubs.Any(p => p.Articulo == "69-b" && TextKey.Normalize(p.Situacion).Contains("SENTENCIA"));
+                var esCanc = pubs.Any(p => p.Articulo == "69" && p.Listado.StartsWith("cancelados"));
+                var esCond = pubs.Any(p => p.Articulo == "69" && p.Listado.StartsWith("condonados"));
+                var esExig = pubs.Any(p => p.Articulo == "69" && p.Listado == "exigibles");
+                var esFirm = pubs.Any(p => p.Articulo == "69" && p.Listado == "firmes");
+                var esNoLoc = pubs.Any(p => p.Articulo == "69" && p.Listado == "no-localizados");
+
+                contribuyentes.Add(new RfcEstadoContribuyente(
+                    Rfc: rfc,
+                    Encontrado: true,
+                    RazonSocial: razonSocialPorRfc.GetValueOrDefault(rfc),
+                    Articulos: arts,
+                    FechaEfectivaReciente: fechaMasReciente,
+                    OrigenMasReciente: origenMasReciente,
+                    EsDefinitivo: esDef,
+                    EsPresunto: esPres,
+                    EsDesvirtuado: esDesv,
+                    EsSentenciaFavorable: esSent,
+                    EsCancelado: esCanc,
+                    EsCondonado: esCond,
+                    EsExigible: esExig,
+                    EsFirme: esFirm,
+                    EsNoLocalizado: esNoLoc,
+                    Publicaciones: pubs
+                ));
+            }
+            else
+            {
+                contribuyentes.Add(new RfcEstadoContribuyente(
+                    Rfc: rfc,
+                    Encontrado: false,
+                    RazonSocial: null,
+                    Articulos: [],
+                    FechaEfectivaReciente: null,
+                    OrigenMasReciente: null,
+                    EsDefinitivo: false,
+                    EsPresunto: false,
+                    EsDesvirtuado: false,
+                    EsSentenciaFavorable: false,
+                    EsCancelado: false,
+                    EsCondonado: false,
+                    EsExigible: false,
+                    EsFirme: false,
+                    EsNoLocalizado: false,
+                    Publicaciones: []
+                ));
+            }
+        }
+
+        return new RfcEstadoResponse(
+            ConsultadaEn: DateTimeOffset.Now,
+            TotalSolicitados: normalizedRfcs.Length,
+            TotalEncontrados: encontrados,
+            TotalNoEncontrados: normalizedRfcs.Length - encontrados,
+            Contribuyentes: contribuyentes
+        );
+    }
+
+    public async Task<RfcHistorialResponse> ConsultarHistorialRfcsAsync(string[] rfcs, string? articulo, string? listado, CancellationToken ct)
+    {
+        var normalizedRfcs = Rfc.ValidateMany(rfcs);
+        var table = new DataTable();
+        table.Columns.Add("Rfc", typeof(string));
+        table.Columns.Add("OrdenEntrada", typeof(int));
+        for (var i = 0; i < normalizedRfcs.Length; i++) table.Rows.Add(normalizedRfcs[i], i);
+
+        await using var c = await OpenAsync(ct);
+        using var cmd = Command(c, "dbo.ConsultarHistorialRfcs");
+        cmd.CommandType = CommandType.StoredProcedure;
+        P(cmd, "@Articulo", SqlDbType.VarChar, articulo, 16);
+        P(cmd, "@Listado", SqlDbType.VarChar, listado, 100);
+        var p = cmd.Parameters.Add("@Rfcs", SqlDbType.Structured);
+        p.TypeName = "dbo.RfcInput";
+        p.Value = table;
+
+        var historialPorRfc = new Dictionary<string, List<HistorialEventoDto>>(StringComparer.OrdinalIgnoreCase);
+        var razonSocialPorRfc = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        await using (var r = await cmd.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct))
+        {
+            while (await r.ReadAsync(ct))
+            {
+                var id = Convert.ToInt64(r.GetValue(0));
+                var rfc = r.GetString(1);
+                var razon = r.GetString(2);
+                if (!razonSocialPorRfc.ContainsKey(rfc)) razonSocialPorRfc[rfc] = razon;
+
+                var art = r.GetString(3);
+                var list = r.GetString(4);
+                var sit = r.GetString(5);
+                var fechaEf = GetDateOnly(r, 6);
+                var evento = r.GetString(7);
+                var origen = r.GetString(8);
+                var fechaReg = r.GetDateTime(9);
+                var codNota = GetInt64(r, 10);
+                var url = GetString(r, 11);
+                var ofSat = GetString(r, 12);
+                var fSat = GetDateOnly(r, 13);
+                var ofDof = GetString(r, 14);
+                var fDof = GetDateOnly(r, 15);
+                var ent = GetString(r, 16);
+                var mot = GetString(r, 17);
+
+                var tipoId = CatalogoTipos.ResolverTipoId(art, list, sit);
+
+                var dto = new HistorialEventoDto(
+                    id, tipoId, art, list, sit, fechaEf, evento, origen,
+                    fechaReg, codNota, url, ofSat, fSat, ofDof, fDof, ent, mot
+                );
+
+                if (!historialPorRfc.TryGetValue(rfc, out var lista))
+                {
+                    lista = [];
+                    historialPorRfc[rfc] = lista;
+                }
+                lista.Add(dto);
+            }
+        }
+
+        var resultado = new List<RfcHistorialContribuyente>(normalizedRfcs.Length);
+        foreach (var rfc in normalizedRfcs)
+        {
+            var eventos = historialPorRfc.GetValueOrDefault(rfc) ?? [];
+            resultado.Add(new RfcHistorialContribuyente(
+                Rfc: rfc,
+                RazonSocial: razonSocialPorRfc.GetValueOrDefault(rfc),
+                TotalEventos: eventos.Count,
+                LineaTiempo: eventos
+            ));
+        }
+
+        return new RfcHistorialResponse(
+            ConsultadaEn: DateTimeOffset.Now,
+            TotalSolicitados: normalizedRfcs.Length,
+            HistorialPorRfc: resultado
+        );
+    }
+
+    public async Task<DofSyncResponse> SincronizarDofPeriodoAsync(
+        DateOnly inicio, DateOnly fin, string? articuloFiltro,
+        SafeDownloader downloader, AgentOptions options, CancellationToken ct)
+    {
+        const string baseUrl = "https://sidof.segob.gob.mx/dof/sidof";
+        var totalDias = 0;
+        var notasProcesadas = 0;
+        var detalleNotas = new List<DofSyncDetalleNota>();
+        var notasParaRegistrar = new List<(long CodNota, string Titulo, DateOnly Fecha, string? Edicion, string? Organismo, string? Articulo, string Url, string? Hash, string? RutaArchivo, int Total)>();
+
+        var tablaStaging = new DataTable();
+        tablaStaging.Columns.Add("Rfc", typeof(string));
+        tablaStaging.Columns.Add("RazonSocial", typeof(string));
+        tablaStaging.Columns.Add("Articulo", typeof(string));
+        tablaStaging.Columns.Add("Listado", typeof(string));
+        tablaStaging.Columns.Add("Situacion", typeof(string));
+        tablaStaging.Columns.Add("FechaEfectiva", typeof(DateTime));
+        tablaStaging.Columns.Add("CodNotaDOF", typeof(long));
+        tablaStaging.Columns.Add("UrlOrigen", typeof(string));
+        tablaStaging.Columns.Add("NumeroOficioDOF", typeof(string));
+        tablaStaging.Columns.Add("EntidadFederativa", typeof(string));
+        tablaStaging.Columns.Add("Motivo", typeof(string));
+        tablaStaging.Columns.Add("HashFila", typeof(byte[]));
+
+        for (var fecha = inicio; fecha <= fin; fecha = fecha.AddDays(1))
+        {
+            ct.ThrowIfCancellationRequested();
+            totalDias++;
+            string content;
+            try
+            {
+                content = await downloader.TextAsync($"{baseUrl}/notas/{fecha:dd-MM-yyyy}", options, ct);
+            }
+            catch (Exception ex)
+            {
+                logger?.LogWarning(ex, "Error al consultar notas SIDOF del día {Fecha:yyyy-MM-dd}", fecha);
+                continue;
+            }
+
+            using var response = JsonDocument.Parse(content);
+            if (!response.RootElement.TryGetProperty("CodError", out var code) || code.GetInt32() != 0) continue;
+
+            var seenNotes = new HashSet<long>();
+            foreach (var group in new[] { "NotasMatutinas", "NotasVespertinas", "NotasExtraordinarias" })
+            {
+                if (!response.RootElement.TryGetProperty(group, out var notes) || notes.ValueKind != JsonValueKind.Array) continue;
+                foreach (var note in notes.EnumerateArray())
+                {
+                    var agency = note.TryGetProperty("codOrgaDos", out var ag) ? ag.GetString() ?? "" : "";
+                    if (!TextKey.Normalize(agency).Contains("HACIENDA")) continue;
+                    if (!note.TryGetProperty("codNota", out var cn) || !long.TryParse(cn.GetString(), out var codNota) || !seenNotes.Add(codNota)) continue;
+
+                    try
+                    {
+                        var download = await downloader.FetchAsync($"{baseUrl}/notas/nota/{codNota}", options, ct);
+                        using var detail = JsonDocument.Parse(await File.ReadAllTextAsync(download.Path, ct));
+                        if (!detail.RootElement.TryGetProperty("Nota", out var val)) continue;
+
+                        var title = val.TryGetProperty("titulo", out var t) ? t.GetString() ?? "" : "";
+                        var html = val.TryGetProperty("cadenaContenido", out var h) ? h.GetString() ?? "" : "";
+                        var dateText = val.TryGetProperty("fecha", out var d) ? d.GetString() ?? "" : "";
+                        if (!DateOnly.TryParseExact(dateText, "dd-MM-yyyy", CultureInfo.InvariantCulture, DateTimeStyles.None, out var pubDate)) continue;
+
+                        var parsed = DofParser.Parse(title, html, pubDate);
+                        if (!parsed.Relevant || parsed.Rows.Count == 0) continue;
+
+                        var filasFiltradas = parsed.Rows
+                            .Where(r => string.IsNullOrEmpty(articuloFiltro) || string.Equals(r.Article, articuloFiltro, StringComparison.OrdinalIgnoreCase))
+                            .ToList();
+
+                        if (filasFiltradas.Count == 0) continue;
+
+                        notasProcesadas++;
+                        detalleNotas.Add(new DofSyncDetalleNota(codNota, pubDate, title, filasFiltradas.Count));
+
+                        var edicion = val.TryGetProperty("codEdicion", out var ed) ? ed.GetString() : null;
+                        var artNota = filasFiltradas.Select(r => r.Article).FirstOrDefault() ?? "69-b";
+                        notasParaRegistrar.Add((codNota, title, pubDate, edicion, agency, artNota, download.Url, download.Hash, download.Path, filasFiltradas.Count));
+
+                        foreach (var row in filasFiltradas)
+                        {
+                            var rfc = Rfc.Normalize(row.Rfc);
+                            if (string.IsNullOrWhiteSpace(rfc)) rfc = !string.IsNullOrWhiteSpace(row.Rfc) ? row.Rfc.Trim() : "(SIN RFC)";
+                            if (rfc.Length > 100) rfc = rfc[..100];
+
+                            var razon = row.Name ?? "";
+                            if (razon.Length > 2000) razon = razon[..2000];
+
+                            var situacion = row.Status ?? "";
+                            if (situacion.Length > 2000) situacion = situacion[..2000];
+
+                            var hash = row.Datos?.ComputeHash() ?? ComputeHashFallback(rfc, razon, row.Article, row.Listing, situacion, row.PublicationDate);
+
+                            var dataRow = tablaStaging.NewRow();
+                            dataRow["Rfc"] = rfc;
+                            dataRow["RazonSocial"] = razon;
+                            dataRow["Articulo"] = row.Article;
+                            dataRow["Listado"] = row.Listing;
+                            dataRow["Situacion"] = situacion;
+                            dataRow["FechaEfectiva"] = row.PublicationDate.HasValue ? row.PublicationDate.Value.ToDateTime(TimeOnly.MinValue) : DBNull.Value;
+                            dataRow["CodNotaDOF"] = codNota;
+                            dataRow["UrlOrigen"] = download.Url;
+                            dataRow["NumeroOficioDOF"] = (object?)row.Datos?.NumeroOficioDOF ?? DBNull.Value;
+                            dataRow["EntidadFederativa"] = (object?)row.Entity ?? DBNull.Value;
+                            dataRow["Motivo"] = (object?)row.Datos?.Motivo ?? DBNull.Value;
+                            dataRow["HashFila"] = hash;
+                            tablaStaging.Rows.Add(dataRow);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        logger?.LogWarning(ex, "Fallo al procesar nota DOF {CodNota} durante sincronización on-demand", codNota);
+                    }
+                }
+            }
+        }
+
+        var resumenList = new List<DofSyncResumenTipo>();
+        var totalFilas = tablaStaging.Rows.Count;
+
+        if (totalFilas > 0)
+        {
+            await using var c = await OpenAsync(ct);
+            await using var tx = (SqlTransaction)await c.BeginTransactionAsync(ct);
+
+            using var createTableCmd = Command(c, """
+                CREATE TABLE #DofStaging (
+                    Rfc                 nvarchar(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+                    RazonSocial         nvarchar(2000) NOT NULL,
+                    Articulo            varchar(16) NOT NULL,
+                    Listado             varchar(100) NOT NULL,
+                    Situacion           nvarchar(2000) NOT NULL,
+                    FechaEfectiva       date NULL,
+                    CodNotaDOF          bigint NULL,
+                    UrlOrigen           nvarchar(2048) NULL,
+                    NumeroOficioDOF     nvarchar(200) NULL,
+                    EntidadFederativa   nvarchar(1000) NULL,
+                    Motivo              nvarchar(2000) NULL,
+                    HashFila            varbinary(32) NOT NULL
+                );
+                """, tx);
+            await createTableCmd.ExecuteNonQueryAsync(ct);
+
+            using (var bulk = new SqlBulkCopy(c, SqlBulkCopyOptions.Default, tx))
+            {
+                bulk.DestinationTableName = "#DofStaging";
+                bulk.BulkCopyTimeout = 300;
+                foreach (DataColumn col in tablaStaging.Columns)
+                    bulk.ColumnMappings.Add(col.ColumnName, col.ColumnName);
+                await bulk.WriteToServerAsync(tablaStaging, ct);
+            }
+
+            using var conteoCmd = Command(c, """
+                SELECT 
+                    s.Articulo,
+                    s.Listado,
+                    COUNT(*) AS Encontrados,
+                    SUM(CASE WHEN v.ContribuyenteId IS NULL THEN 1 ELSE 0 END) AS Nuevos,
+                    SUM(CASE WHEN v.ContribuyenteId IS NOT NULL THEN 1 ELSE 0 END) AS Actualizados
+                FROM #DofStaging s
+                LEFT JOIN dbo.ContribuyenteVigente v 
+                    ON v.Rfc = s.Rfc AND v.Articulo = s.Articulo AND v.Listado = s.Listado
+                GROUP BY s.Articulo, s.Listado;
+                """, tx);
+
+            await using (var r = await conteoCmd.ExecuteReaderAsync(ct))
+            {
+                while (await r.ReadAsync(ct))
+                {
+                    var art = r.GetString(0);
+                    var list = r.GetString(1);
+                    var encontrados = r.GetInt32(2);
+                    var nuevos = r.GetInt32(3);
+                    var actualizados = r.GetInt32(4);
+                    var tipoId = CatalogoTipos.ResolverTipoId(art, list);
+                    var tipoObj = CatalogoTipos.ObtenerPorId(tipoId);
+
+                    resumenList.Add(new DofSyncResumenTipo(
+                        TipoId: tipoId,
+                        Articulo: art,
+                        Listado: list,
+                        Nombre: tipoObj?.Nombre ?? $"{art} {list}",
+                        Encontrados: encontrados,
+                        Nuevos: nuevos,
+                        Actualizados: actualizados,
+                        SinCambios: 0
+                    ));
+                }
+            }
+
+            using var mergeCmd = Command(c, """
+                INSERT INTO dbo.ContribuyenteHistorial (
+                    Rfc, RazonSocial, Articulo, Listado, Situacion, FechaEfectiva,
+                    TipoEvento, Origen, FechaRegistro, CodNotaDOF, UrlOrigen,
+                    NumeroOficioSAT, FechaOficioSAT, NumeroOficioDOF, FechaOficioDOF,
+                    EntidadFederativa, Motivo, HashFila
+                )
+                SELECT 
+                    s.Rfc, s.RazonSocial, s.Articulo, s.Listado, s.Situacion, s.FechaEfectiva,
+                    'Publicacion DOF', 'DOF', SYSDATETIME(), s.CodNotaDOF, s.UrlOrigen,
+                    NULL, NULL, s.NumeroOficioDOF, s.FechaEfectiva,
+                    s.EntidadFederativa, s.Motivo, s.HashFila
+                FROM #DofStaging s;
+
+                UPDATE v
+                SET 
+                    RazonSocial                 = s.RazonSocial,
+                    Situacion                   = s.Situacion,
+                    FechaEfectiva               = s.FechaEfectiva,
+                    OrigenUltimaModificacion    = 'DOF',
+                    FechaModificacion           = SYSDATETIME(),
+                    NumeroOficioDOF             = COALESCE(s.NumeroOficioDOF, v.NumeroOficioDOF),
+                    FechaOficioDOF              = s.FechaEfectiva,
+                    CodNotaDOF                  = s.CodNotaDOF,
+                    UrlOrigenDOF                = s.UrlOrigen,
+                    EntidadFederativa           = COALESCE(s.EntidadFederativa, v.EntidadFederativa),
+                    HashFila                    = s.HashFila,
+                    UltimaDescarga              = SYSDATETIME()
+                FROM dbo.ContribuyenteVigente v
+                JOIN #DofStaging s 
+                    ON s.Rfc = v.Rfc AND s.Articulo = v.Articulo AND s.Listado = s.Listado
+                WHERE s.FechaEfectiva >= v.FechaEfectiva OR v.FechaEfectiva IS NULL;
+
+                INSERT INTO dbo.ContribuyenteVigente (
+                    Rfc, RazonSocial, Articulo, Listado, Situacion, FechaEfectiva,
+                    OrigenUltimaModificacion, FechaModificacion, TipoPersona, EntidadFederativa,
+                    NumeroOficioDOF, FechaOficioDOF, CodNotaDOF, UrlOrigenDOF, HashFila, UltimaDescarga
+                )
+                SELECT 
+                    s.Rfc, s.RazonSocial, s.Articulo, s.Listado, s.Situacion, s.FechaEfectiva,
+                    'DOF', SYSDATETIME(), NULL, s.EntidadFederativa,
+                    s.NumeroOficioDOF, s.FechaEfectiva, s.CodNotaDOF, s.UrlOrigen, s.HashFila, SYSDATETIME()
+                FROM #DofStaging s
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM dbo.ContribuyenteVigente v 
+                    WHERE v.Rfc = s.Rfc AND v.Articulo = s.Articulo AND v.Listado = s.Listado
+                );
+                """, tx);
+            await mergeCmd.ExecuteNonQueryAsync(ct);
+
+            foreach (var meta in notasParaRegistrar)
+            {
+                using var pubCmd = Command(c, """
+                    IF NOT EXISTS (SELECT 1 FROM dbo.PublicacionDOF WITH (UPDLOCK, HOLDLOCK) WHERE CodNota = @CodNota)
+                    BEGIN
+                        INSERT INTO dbo.PublicacionDOF (
+                            CodNota, Titulo, FechaPublicacion, Edicion, Organismo, Articulo, UrlNota, HashArchivo, RutaArchivo, TotalContribuyentes, FechaRegistro
+                        ) VALUES (
+                            @CodNota, @Titulo, @FechaPublicacion, @Edicion, @Organismo, @Articulo, @UrlNota, @HashArchivo, @RutaArchivo, @Total, SYSDATETIME()
+                        );
+                    END
+                    ELSE
+                    BEGIN
+                        UPDATE dbo.PublicacionDOF
+                        SET Titulo = @Titulo,
+                            FechaPublicacion = @FechaPublicacion,
+                            Edicion = @Edicion,
+                            Organismo = @Organismo,
+                            Articulo = @Articulo,
+                            UrlNota = @UrlNota,
+                            HashArchivo = @HashArchivo,
+                            RutaArchivo = @RutaArchivo,
+                            TotalContribuyentes = @Total,
+                            FechaRegistro = SYSDATETIME()
+                        WHERE CodNota = @CodNota;
+                    END
+                    """, tx);
+                P(pubCmd, "@CodNota", SqlDbType.BigInt, meta.CodNota);
+                P(pubCmd, "@Titulo", SqlDbType.NVarChar, meta.Titulo, 1000);
+                P(pubCmd, "@FechaPublicacion", SqlDbType.Date, meta.Fecha.ToDateTime(TimeOnly.MinValue));
+                P(pubCmd, "@Edicion", SqlDbType.VarChar, (object?)meta.Edicion ?? DBNull.Value, 50);
+                P(pubCmd, "@Organismo", SqlDbType.NVarChar, (object?)meta.Organismo ?? DBNull.Value, 500);
+                P(pubCmd, "@Articulo", SqlDbType.VarChar, meta.Articulo ?? "69-b", 16);
+                P(pubCmd, "@UrlNota", SqlDbType.NVarChar, meta.Url, 2048);
+                P(pubCmd, "@HashArchivo", SqlDbType.VarChar, (object?)meta.Hash ?? DBNull.Value, 64);
+                P(pubCmd, "@RutaArchivo", SqlDbType.NVarChar, (object?)meta.RutaArchivo ?? DBNull.Value, 2048);
+                P(pubCmd, "@Total", SqlDbType.Int, meta.Total);
+                await pubCmd.ExecuteNonQueryAsync(ct);
+            }
+
+            await tx.CommitAsync(ct);
+        }
+
+        return new DofSyncResponse(
+            Estado: totalFilas > 0 ? "completado" : "sin_registros",
+            Mensaje: totalFilas > 0
+                ? $"Sincronización finalizada exitosamente: {totalFilas} registros procesados en {notasProcesadas} nota(s) fiscal(es)."
+                : "No se encontraron nuevas notas fiscales ni registros para el periodo especificado.",
+            Periodo: new { fechaInicio = inicio.ToString("yyyy-MM-dd"), fechaFin = fin.ToString("yyyy-MM-dd") },
+            FiltroArticulo: articuloFiltro,
+            DiasConsultados: totalDias,
+            NotasFiscalesEncontradas: notasProcesadas,
+            TotalRegistrosProcesados: totalFilas,
+            ResumenPorTipo: resumenList,
+            DetalleNotas: detalleNotas
+        );
     }
 }

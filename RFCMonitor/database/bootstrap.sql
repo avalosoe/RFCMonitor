@@ -617,6 +617,7 @@ GO
 CREATE OR ALTER PROCEDURE dbo.ConsultarContribuyentesVigentes
     @Articulo       varchar(16) = NULL,
     @Listado        varchar(100) = NULL,
+    @Situacion      nvarchar(200) = NULL,
     @FiltrarRfc     bit = 0,
     @Rfcs           dbo.RfcInput READONLY
 AS
@@ -669,6 +670,7 @@ BEGIN
     JOIN dbo.Articulo a ON a.Clave = v.Articulo
     WHERE (@Articulo IS NULL OR v.Articulo = @Articulo)
       AND (@Listado IS NULL OR v.Listado = @Listado)
+      AND (@Situacion IS NULL OR v.Situacion LIKE '%' + @Situacion + '%')
       AND (@FiltrarRfc = 0 OR EXISTS (SELECT 1 FROM @Rfcs r WHERE r.Rfc = v.Rfc))
     ORDER BY 
         v.Rfc COLLATE Latin1_General_100_BIN2,
@@ -717,6 +719,47 @@ BEGIN
         CASE WHEN h.FechaEfectiva IS NULL THEN 1 ELSE 0 END,
         h.FechaEfectiva DESC,
         h.FechaRegistro DESC;
+END;
+GO
+
+CREATE OR ALTER PROCEDURE dbo.ConsultarHistorialRfcs
+    @Articulo       varchar(16) = NULL,
+    @Listado        varchar(100) = NULL,
+    @Rfcs           dbo.RfcInput READONLY
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT 
+        h.HistorialId,
+        h.Rfc,
+        h.RazonSocial,
+        h.Articulo,
+        h.Listado,
+        h.Situacion,
+        h.FechaEfectiva,
+        h.TipoEvento,
+        h.Origen,
+        h.FechaRegistro,
+        h.CodNotaDOF,
+        h.UrlOrigen,
+        h.NumeroOficioSAT,
+        h.FechaOficioSAT,
+        h.NumeroOficioDOF,
+        h.FechaOficioDOF,
+        h.EntidadFederativa,
+        h.Motivo
+    FROM dbo.ContribuyenteHistorial h
+    JOIN dbo.Articulo a ON a.Clave = h.Articulo
+    WHERE EXISTS (SELECT 1 FROM @Rfcs r WHERE r.Rfc = h.Rfc)
+      AND (@Articulo IS NULL OR h.Articulo = @Articulo)
+      AND (@Listado IS NULL OR h.Listado = @Listado)
+    ORDER BY 
+        h.Rfc COLLATE Latin1_General_100_BIN2,
+        CASE WHEN h.FechaEfectiva IS NULL THEN 1 ELSE 0 END,
+        h.FechaEfectiva ASC,
+        h.FechaRegistro ASC
+    OPTION (RECOMPILE);
 END;
 GO
 

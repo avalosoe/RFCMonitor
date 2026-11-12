@@ -148,3 +148,180 @@ public static class TextKey
     public static string Normalize(string text) => string.Concat(text.Normalize(NormalizationForm.FormD)
         .Where(c => CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.NonSpacingMark && char.IsLetterOrDigit(c))).ToUpperInvariant();
 }
+
+public sealed record GlobalContribuyenteDto(
+    long ContribuyenteId,
+    int TipoId,
+    string Rfc,
+    string RazonSocial,
+    string Articulo,
+    string Listado,
+    string Situacion,
+    DateOnly? FechaEfectiva,
+    string OrigenUltimaModificacion,
+    DateTime FechaModificacion,
+    string? TipoPersona,
+    string? EntidadFederativa,
+    decimal? Monto,
+    string? Ejercicio,
+    string? Periodo,
+    string? Motivo,
+    DateOnly? FechaCancelacion,
+    DateOnly? FechaAutorizacion,
+    string? Administracion,
+    string? NumeroOficioSAT,
+    DateOnly? FechaOficioSAT,
+    string? NumeroOficioDOF,
+    DateOnly? FechaOficioDOF,
+    string? PresuncionOficioSAT,
+    DateOnly? PresuncionFechaSAT,
+    string? PresuncionOficioDOF,
+    DateOnly? PresuncionFechaDOF,
+    string? DesvirtuadoOficioSAT,
+    DateOnly? DesvirtuadoFechaSAT,
+    string? DesvirtuadoOficioDOF,
+    DateOnly? DesvirtuadoFechaDOF,
+    string? DefinitivoOficioSAT,
+    DateOnly? DefinitivoFechaSAT,
+    string? DefinitivoOficioDOF,
+    DateOnly? DefinitivoFechaDOF,
+    string? SentenciaOficioSAT,
+    DateOnly? SentenciaFechaSAT,
+    string? SentenciaOficioDOF,
+    DateOnly? SentenciaFechaDOF,
+    long? CodNotaDOF,
+    string? UrlOrigenDOF,
+    DateTime? UltimaDescarga
+);
+
+public sealed record EtapaOficio(string? OficioSAT, DateOnly? FechaSAT, string? OficioDOF, DateOnly? FechaDOF);
+
+public sealed record RfcEtapas(
+    EtapaOficio Presuncion,
+    EtapaOficio Desvirtuado,
+    EtapaOficio Definitivo,
+    EtapaOficio Sentencia
+);
+
+public sealed record RfcPublicacionVigente(
+    int TipoId,
+    string Articulo,
+    string Listado,
+    string Situacion,
+    DateOnly? FechaEfectiva,
+    string Origen,
+    string? TipoPersona,
+    string? EntidadFederativa,
+    decimal? Monto,
+    string? Ejercicio,
+    string? Periodo,
+    string? Motivo,
+    DateOnly? FechaCancelacion,
+    DateOnly? FechaAutorizacion,
+    string? Administracion,
+    string? NumeroOficioSAT,
+    DateOnly? FechaOficioSAT,
+    string? NumeroOficioDOF,
+    DateOnly? FechaOficioDOF,
+    RfcEtapas Etapas,
+    long? CodNotaDOF,
+    string? UrlOrigenDOF,
+    DateTime FechaModificacion
+);
+
+public sealed record RfcEstadoContribuyente(
+    string Rfc,
+    bool Encontrado,
+    string? RazonSocial,
+    IReadOnlyList<string> Articulos,
+    DateOnly? FechaEfectivaReciente,
+    string? OrigenMasReciente,
+    bool EsDefinitivo,
+    bool EsPresunto,
+    bool EsDesvirtuado,
+    bool EsSentenciaFavorable,
+    bool EsCancelado,
+    bool EsCondonado,
+    bool EsExigible,
+    bool EsFirme,
+    bool EsNoLocalizado,
+    IReadOnlyList<RfcPublicacionVigente> Publicaciones
+);
+
+public sealed record RfcEstadoResponse(
+    DateTimeOffset ConsultadaEn,
+    int TotalSolicitados,
+    int TotalEncontrados,
+    int TotalNoEncontrados,
+    IReadOnlyList<RfcEstadoContribuyente> Contribuyentes
+);
+
+public sealed record HistorialEventoDto(
+    long HistorialId,
+    int TipoId,
+    string Articulo,
+    string Listado,
+    string Situacion,
+    DateOnly? FechaEfectiva,
+    string TipoEvento,
+    string Origen,
+    DateTime FechaRegistro,
+    long? CodNotaDOF,
+    string? UrlOrigen,
+    string? NumeroOficioSAT,
+    DateOnly? FechaOficioSAT,
+    string? NumeroOficioDOF,
+    DateOnly? FechaOficioDOF,
+    string? EntidadFederativa,
+    string? Motivo
+);
+
+public sealed record RfcHistorialContribuyente(
+    string Rfc,
+    string? RazonSocial,
+    int TotalEventos,
+    IReadOnlyList<HistorialEventoDto> LineaTiempo
+);
+
+public sealed record RfcHistorialResponse(
+    DateTimeOffset ConsultadaEn,
+    int TotalSolicitados,
+    IReadOnlyList<RfcHistorialContribuyente> HistorialPorRfc
+);
+
+public sealed record DofSyncRequest(
+    DateOnly? FechaInicio,
+    DateOnly? FechaFin,
+    string? Articulo = null
+);
+
+public sealed record DofSyncResumenTipo(
+    int TipoId,
+    string Articulo,
+    string Listado,
+    string Nombre,
+    int Encontrados,
+    int Nuevos,
+    int Actualizados,
+    int SinCambios
+);
+
+public sealed record DofSyncDetalleNota(
+    long CodNota,
+    DateOnly Fecha,
+    string Titulo,
+    int Registros
+);
+
+public sealed record DofSyncResponse(
+    string Estado,
+    string Mensaje,
+    object Periodo,
+    string? FiltroArticulo,
+    int DiasConsultados,
+    int NotasFiscalesEncontradas,
+    int TotalRegistrosProcesados,
+    IReadOnlyList<DofSyncResumenTipo> ResumenPorTipo,
+    IReadOnlyList<DofSyncDetalleNota> DetalleNotas
+);
+
