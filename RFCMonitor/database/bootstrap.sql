@@ -119,10 +119,27 @@ BEGIN
         SentenciaOficioDOF          nvarchar(200) NULL,
         SentenciaFechaDOF           date NULL,
 
+        -- Trazabilidad DOF de origen vigente
+        CodNotaDOF                  bigint NULL,
+        UrlOrigenDOF                nvarchar(2048) NULL,
+
         -- Control de Delta y Comparativa
         HashFila                    binary(32) NOT NULL,
         UltimaDescarga              datetime2(3) NOT NULL DEFAULT SYSDATETIME()
     );
+END;
+GO
+
+-- Asegurar columnas de trazabilidad DOF si la tabla ya existía
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.ContribuyenteVigente') AND name = 'CodNotaDOF')
+BEGIN
+    ALTER TABLE dbo.ContribuyenteVigente ADD CodNotaDOF bigint NULL;
+END;
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.ContribuyenteVigente') AND name = 'UrlOrigenDOF')
+BEGIN
+    ALTER TABLE dbo.ContribuyenteVigente ADD UrlOrigenDOF nvarchar(2048) NULL;
 END;
 GO
 
@@ -139,6 +156,14 @@ BEGIN
     CREATE INDEX IX_ContribuyenteVigente_Rfc 
     ON dbo.ContribuyenteVigente(Rfc)
     INCLUDE (RazonSocial, Articulo, Listado, Situacion, FechaEfectiva, OrigenUltimaModificacion);
+END;
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ContribuyenteVigente_CodNotaDOF' AND object_id = OBJECT_ID('dbo.ContribuyenteVigente'))
+BEGIN
+    CREATE INDEX IX_ContribuyenteVigente_CodNotaDOF 
+    ON dbo.ContribuyenteVigente(CodNotaDOF)
+    WHERE CodNotaDOF IS NOT NULL;
 END;
 GO
 
@@ -211,9 +236,45 @@ BEGIN
 END;
 GO
 
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ContribuyenteHistorial_CodNotaDOF' AND object_id = OBJECT_ID('dbo.ContribuyenteHistorial'))
+BEGIN
+    CREATE INDEX IX_ContribuyenteHistorial_CodNotaDOF 
+    ON dbo.ContribuyenteHistorial(CodNotaDOF)
+    WHERE CodNotaDOF IS NOT NULL;
+END;
+GO
+
 -- ----------------------------------------------------------------------------
--- 5. Control de Cobertura y Operación SIDOF / DOF
+-- 5. Publicaciones Oficiales y Control SIDOF / DOF
 -- ----------------------------------------------------------------------------
+-- Almacena los decretos y notas publicadas en el DOF a nivel maestro para
+-- auditoría legal, trazabilidad forense y enlace directo con contribuyentes extraídos.
+-- ----------------------------------------------------------------------------
+
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'PublicacionDOF' AND schema_id = SCHEMA_ID('dbo'))
+BEGIN
+    CREATE TABLE dbo.PublicacionDOF (
+        CodNota                 bigint NOT NULL PRIMARY KEY,
+        Titulo                  nvarchar(1000) NOT NULL,
+        FechaPublicacion        date NOT NULL,
+        Edicion                 varchar(50) NULL,
+        Organismo               nvarchar(500) NULL,
+        Articulo                varchar(16) NOT NULL REFERENCES dbo.Articulo(Clave),
+        UrlNota                 nvarchar(2048) NOT NULL,
+        HashArchivo             varchar(64) NULL,
+        RutaArchivo             nvarchar(2048) NULL,
+        TotalContribuyentes     int NOT NULL DEFAULT 0,
+        FechaRegistro           datetime2(3) NOT NULL DEFAULT SYSDATETIME()
+    );
+END;
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_PublicacionDOF_FechaPublicacion' AND object_id = OBJECT_ID('dbo.PublicacionDOF'))
+BEGIN
+    CREATE INDEX IX_PublicacionDOF_FechaPublicacion 
+    ON dbo.PublicacionDOF(FechaPublicacion DESC, Articulo);
+END;
+GO
 
 IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'ControlCoberturaDOF' AND schema_id = SCHEMA_ID('dbo'))
 BEGIN
@@ -517,12 +578,12 @@ BEGIN
         INSERT INTO dbo.ContribuyenteVigente (
             Rfc, RazonSocial, Articulo, Listado, Situacion, FechaEfectiva,
             OrigenUltimaModificacion, FechaModificacion, TipoPersona, EntidadFederativa,
-            NumeroOficioDOF, FechaOficioDOF, HashFila, UltimaDescarga
+            NumeroOficioDOF, FechaOficioDOF, CodNotaDOF, UrlOrigenDOF, HashFila, UltimaDescarga
         )
         VALUES (
             @Rfc, @RazonSocial, @Articulo, @Listado, @Situacion, @FechaEfectiva,
             'DOF', @FechaHoraLocal, NULL, @EntidadFederativa,
-            @NumeroOficioDOF, @FechaEfectiva, @HashFila, @FechaHoraLocal
+            @NumeroOficioDOF, @FechaEfectiva, @CodNotaDOF, @UrlOrigen, @HashFila, @FechaHoraLocal
         );
     END
     ELSE
@@ -537,6 +598,8 @@ BEGIN
             FechaModificacion           = @FechaHoraLocal,
             NumeroOficioDOF             = COALESCE(@NumeroOficioDOF, NumeroOficioDOF),
             FechaOficioDOF              = @FechaEfectiva,
+            CodNotaDOF                  = @CodNotaDOF,
+            UrlOrigenDOF                = @UrlOrigen,
             EntidadFederativa           = COALESCE(@EntidadFederativa, EntidadFederativa),
             HashFila                    = @HashFila
         WHERE Rfc = @Rfc 
@@ -599,6 +662,8 @@ BEGIN
         v.SentenciaFechaSAT,
         v.SentenciaOficioDOF,
         v.SentenciaFechaDOF,
+        v.CodNotaDOF,
+        v.UrlOrigenDOF,
         v.UltimaDescarga
     FROM dbo.ContribuyenteVigente v
     JOIN dbo.Articulo a ON a.Clave = v.Articulo
@@ -731,7 +796,7 @@ BEGIN
     SET NOCOUNT ON;
 
     SELECT 
-        1 AS GeneracionId,
+        CAST(1 AS bigint) AS GeneracionId,
         SYSDATETIME() AS Creada,
         N'[]' AS FuentesJson,
         N'{}' AS CoberturaJson;
@@ -752,22 +817,22 @@ BEGIN
     IF @Historico = 0
     BEGIN
         SELECT 
-            v.ContribuyenteId           AS RegistroId,
-            1                           AS VersionId,
-            v.Listado                   AS FuenteKey,
-            v.OrigenUltimaModificacion  AS Origen,
-            v.Articulo                  AS Articulo,
-            v.Listado                   AS Listado,
-            v.Rfc                       AS Rfc,
-            v.RazonSocial               AS NombreOriginal,
-            v.Situacion                 AS EstadoOriginal,
-            v.FechaEfectiva             AS FechaPublicacion,
-            CONVERT(bit, 0)             AS Historica,
-            CONVERT(bigint, NULL)       AS CodNota,
-            N''                         AS Url,
-            0                           AS TablaOrdinal,
-            0                           AS FilaOrdinal,
-            N'{}'                       AS DetalleJson
+            v.ContribuyenteId               AS RegistroId,
+            CAST(1 AS bigint)               AS VersionId,
+            v.Listado                       AS FuenteKey,
+            v.OrigenUltimaModificacion      AS Origen,
+            v.Articulo                      AS Articulo,
+            v.Listado                       AS Listado,
+            v.Rfc                           AS Rfc,
+            v.RazonSocial                   AS NombreOriginal,
+            v.Situacion                     AS EstadoOriginal,
+            v.FechaEfectiva                 AS FechaPublicacion,
+            CONVERT(bit, 0)                 AS Historica,
+            v.CodNotaDOF                    AS CodNota,
+            COALESCE(v.UrlOrigenDOF, N'')   AS Url,
+            0                               AS TablaOrdinal,
+            0                               AS FilaOrdinal,
+            N'{}'                           AS DetalleJson
         FROM dbo.ContribuyenteVigente v
         JOIN dbo.Articulo a ON a.Clave = v.Articulo
         WHERE (@Articulo IS NULL OR v.Articulo = @Articulo)
@@ -784,22 +849,22 @@ BEGIN
     ELSE
     BEGIN
         SELECT 
-            h.HistorialId               AS RegistroId,
-            1                           AS VersionId,
-            h.Listado                   AS FuenteKey,
-            h.Origen                    AS Origen,
-            h.Articulo                  AS Articulo,
-            h.Listado                   AS Listado,
-            h.Rfc                       AS Rfc,
-            h.RazonSocial               AS NombreOriginal,
-            h.Situacion                 AS EstadoOriginal,
-            h.FechaEfectiva             AS FechaPublicacion,
+            h.HistorialId                   AS RegistroId,
+            CAST(1 AS bigint)               AS VersionId,
+            h.Listado                       AS FuenteKey,
+            h.Origen                        AS Origen,
+            h.Articulo                      AS Articulo,
+            h.Listado                       AS Listado,
+            h.Rfc                           AS Rfc,
+            h.RazonSocial                   AS NombreOriginal,
+            h.Situacion                     AS EstadoOriginal,
+            h.FechaEfectiva                 AS FechaPublicacion,
             CONVERT(bit, CASE WHEN h.TipoEvento = 'Alta Inicial' THEN 0 ELSE 1 END) AS Historica,
-            h.CodNotaDOF                AS CodNota,
-            COALESCE(h.UrlOrigen, N'')  AS Url,
-            0                           AS TablaOrdinal,
-            0                           AS FilaOrdinal,
-            N'{}'                       AS DetalleJson
+            h.CodNotaDOF                    AS CodNota,
+            COALESCE(h.UrlOrigen, N'')      AS Url,
+            0                               AS TablaOrdinal,
+            0                               AS FilaOrdinal,
+            N'{}'                           AS DetalleJson
         FROM dbo.ContribuyenteHistorial h
         JOIN dbo.Articulo a ON a.Clave = h.Articulo
         WHERE (@Articulo IS NULL OR h.Articulo = @Articulo)
@@ -859,7 +924,7 @@ BEGIN
     SET NOCOUNT ON;
 
     SELECT 
-        1 AS VersionId,
+        CAST(1 AS bigint) AS VersionId,
         HojaOrdinal,
         FilaOrdinal,
         ColumnaOrdinal,
@@ -884,6 +949,6 @@ CREATE OR ALTER PROCEDURE dbo.PublicarGeneracion
 AS
 BEGIN
     SET NOCOUNT ON;
-    SELECT 1 AS GeneracionId;
+    SELECT CAST(1 AS bigint) AS GeneracionId;
 END;
 GO

@@ -54,6 +54,7 @@ GO
 -- 6. Tablas principales de la solución RFCMonitor (Modelo Relacional Limpio)
 DROP TABLE IF EXISTS dbo.ContribuyenteHistorial;
 DROP TABLE IF EXISTS dbo.ContribuyenteVigente;
+DROP TABLE IF EXISTS dbo.PublicacionDOF;
 DROP TABLE IF EXISTS dbo.ControlFuenteSAT;
 DROP TABLE IF EXISTS dbo.ControlCoberturaDOF;
 DROP TABLE IF EXISTS dbo.NotaPendienteDOF;

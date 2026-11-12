@@ -141,7 +141,7 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
         if (await r.ReadAsync(ct))
         {
             DateOnly? portalDate = r.IsDBNull(0) ? null : DateOnly.FromDateTime(r.GetDateTime(0));
-            var totalVigentes = r.GetInt32(2);
+            var totalVigentes = Convert.ToInt32(r.GetValue(2));
             await r.DisposeAsync();
 
             // Si la fecha registrada en BD es igual o más reciente que la del portal y ya tiene registros vigentes,
@@ -250,6 +250,47 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                     P(dofCmd, "@HashFila", SqlDbType.VarBinary, hash, 32);
 
                     await dofCmd.ExecuteNonQueryAsync(ct);
+                }
+
+                // Registrar metadatos de la publicación/decreto en dbo.PublicacionDOF para trazabilidad forense
+                if (document.NoteCode is { } codNota)
+                {
+                    using var pubCmd = Command(c, """
+                        IF NOT EXISTS (SELECT 1 FROM dbo.PublicacionDOF WITH (UPDLOCK, HOLDLOCK) WHERE CodNota = @CodNota)
+                        BEGIN
+                            INSERT INTO dbo.PublicacionDOF (
+                                CodNota, Titulo, FechaPublicacion, Edicion, Organismo, Articulo, UrlNota, HashArchivo, RutaArchivo, TotalContribuyentes, FechaRegistro
+                            ) VALUES (
+                                @CodNota, @Titulo, @FechaPublicacion, @Edicion, @Organismo, @Articulo, @UrlNota, @HashArchivo, @RutaArchivo, @Total, SYSDATETIME()
+                            );
+                        END
+                        ELSE
+                        BEGIN
+                            UPDATE dbo.PublicacionDOF
+                            SET Titulo = @Titulo,
+                                FechaPublicacion = @FechaPublicacion,
+                                Edicion = @Edicion,
+                                Organismo = @Organismo,
+                                Articulo = @Articulo,
+                                UrlNota = @UrlNota,
+                                HashArchivo = @HashArchivo,
+                                RutaArchivo = @RutaArchivo,
+                                TotalContribuyentes = @Total,
+                                FechaRegistro = SYSDATETIME()
+                            WHERE CodNota = @CodNota;
+                        END
+                        """, transaction);
+                    P(pubCmd, "@CodNota", SqlDbType.BigInt, codNota);
+                    P(pubCmd, "@Titulo", SqlDbType.NVarChar, (object?)document.Title ?? "Publicación DOF", 1000);
+                    P(pubCmd, "@FechaPublicacion", SqlDbType.Date, document.SourceDate is { } sd ? sd.ToDateTime(TimeOnly.MinValue) : (object)DateTime.Today);
+                    P(pubCmd, "@Edicion", SqlDbType.VarChar, (object?)document.Edition ?? DBNull.Value, 50);
+                    P(pubCmd, "@Organismo", SqlDbType.NVarChar, (object?)document.Agency ?? DBNull.Value, 500);
+                    P(pubCmd, "@Articulo", SqlDbType.VarChar, document.Article ?? "69-b", 16);
+                    P(pubCmd, "@UrlNota", SqlDbType.NVarChar, document.Url, 2048);
+                    P(pubCmd, "@HashArchivo", SqlDbType.VarChar, (object?)document.Hash ?? DBNull.Value, 64);
+                    P(pubCmd, "@RutaArchivo", SqlDbType.NVarChar, (object?)document.EvidencePath ?? DBNull.Value, 2048);
+                    P(pubCmd, "@Total", SqlDbType.Int, (int)dofCount);
+                    await pubCmd.ExecuteNonQueryAsync(ct);
                 }
 
                 await transaction.CommitAsync(ct);
@@ -494,7 +535,7 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
         using var cmd = Command(c, "dbo.Encabezado");
         cmd.CommandType = CommandType.StoredProcedure;
         await using var r = await cmd.ExecuteReaderAsync(ct);
-        return await r.ReadAsync(ct) ? new(r.GetInt64(0), new DateTimeOffset(DateTime.SpecifyKind(r.GetDateTime(1), DateTimeKind.Local)), r.GetString(2), r.GetString(3)) : null;
+        return await r.ReadAsync(ct) ? new(Convert.ToInt64(r.GetValue(0)), new DateTimeOffset(DateTime.SpecifyKind(r.GetDateTime(1), DateTimeKind.Local)), r.GetString(2), r.GetString(3)) : null;
     }
 
     public async Task<JsonElement> GetOperationalStateAsync(CancellationToken ct)
@@ -518,10 +559,10 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
         {
             yield return new
             {
-                versionId = reader.GetInt64(0),
-                hojaOrdinal = reader.GetInt32(1),
-                fila = reader.GetInt32(2),
-                columna = reader.GetInt32(3),
+                versionId = Convert.ToInt64(reader.GetValue(0)),
+                hojaOrdinal = Convert.ToInt32(reader.GetValue(1)),
+                fila = Convert.ToInt32(reader.GetValue(2)),
+                columna = Convert.ToInt32(reader.GetValue(3)),
                 hoja = reader.GetString(4),
                 valor = reader.IsDBNull(5) ? null : reader.GetString(5)
             };
@@ -590,8 +631,8 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
         while (await r.ReadAsync(ct))
         {
             yield return new(
-                r.GetInt64(0),
-                r.GetInt64(1),
+                Convert.ToInt64(r.GetValue(0)),
+                Convert.ToInt64(r.GetValue(1)),
                 r.GetString(2),
                 r.GetString(3),
                 r.GetString(4),
@@ -601,10 +642,10 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                 r.GetString(8),
                 r.IsDBNull(9) ? null : DateOnly.FromDateTime(r.GetDateTime(9)),
                 r.GetBoolean(10),
-                r.IsDBNull(11) ? null : r.GetInt64(11),
+                r.IsDBNull(11) ? null : Convert.ToInt64(r.GetValue(11)),
                 r.GetString(12),
-                r.GetInt32(13),
-                r.GetInt32(14),
+                Convert.ToInt32(r.GetValue(13)),
+                Convert.ToInt32(r.GetValue(14)),
                 r.GetString(15)
             );
         }
