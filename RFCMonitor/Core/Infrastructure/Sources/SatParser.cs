@@ -96,23 +96,38 @@ public static class SatParser
             var transparency=Array.FindIndex(keys,k=>k.StartsWith("FECHADEPUBLICACIONCONMONTO"));
             if(transparency>=0 && transparency<fields.Length) typed["fechaPublicacionTransparencia"]=ParseDate(fields[transparency]);
             var stages=new List<object>();
+            DateOnly? effectiveDate = ParseDate(dateText);
             if(listing.Article is "69-b" or "69-b-bis")
             {
                 var names=listing.Article=="69-b" ? new[]{"presunto","desvirtuado","definitivo","sentencia-favorable"} : ["definitivo","sentencia-favorable"];
+                var normStatus = TextKey.Normalize(status);
+                DateOnly? stageMatchedDate = null;
+                DateOnly? latestAnyStage = null;
                 for(var j=0;j<names.Length;j++)
                 {
                     var offset=4+j*4;
                     if(offset+3<fields.Length)
                     {
-                        stages.Add(new {etapa=names[j],oficioSat=fields[offset],fechaSat=ParseDate(fields[offset+1]),fechaSatOriginal=fields[offset+1],
-                            oficioDof=fields[offset+2],fechaDof=ParseDate(fields[offset+3]),fechaDofOriginal=fields[offset+3]});
+                        var fSat = ParseDate(fields[offset+1]);
+                        var fDof = ParseDate(fields[offset+3]);
+                        stages.Add(new {etapa=names[j],oficioSat=fields[offset],fechaSat=fSat,fechaSatOriginal=fields[offset+1],
+                            oficioDof=fields[offset+2],fechaDof=fDof,fechaDofOriginal=fields[offset+3]});
+                        var candidate = fDof ?? fSat;
+                        if (candidate.HasValue && (latestAnyStage is null || candidate.Value > latestAnyStage.Value))
+                            latestAnyStage = candidate;
+                        var normEtapa = TextKey.Normalize(names[j]);
+                        if (normStatus.Contains(normEtapa) || normEtapa.Contains(normStatus))
+                        {
+                            stageMatchedDate = candidate;
+                        }
                     }
                 }
                 typed["etapas"]=stages;
+                effectiveDate ??= stageMatchedDate ?? latestAnyStage;
             }
             var original=headers.Select((h,i)=>new OriginalCell(i+1,h,i<fields.Length?fields[i]:"")).ToArray();
             var nameVal=(nameIndex>=0 && nameIndex<fields.Length) ? fields[nameIndex].Trim() : "";
-            yield return new(0,physicalRow,rfc,nameVal,listing.Article,listing.Slug,status,ParseDate(dateText),
+            yield return new(0,physicalRow,rfc,nameVal,listing.Article,listing.Slug,status,effectiveDate,
                 Get("ENTIDADFEDERATIVA"),typed,original,headerRow);
             if(rowsRead%1000==0) await Task.Yield();
         }

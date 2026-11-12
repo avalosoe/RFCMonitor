@@ -477,9 +477,10 @@ BEGIN
     ORDER BY 
         r.Rfc COLLATE Latin1_General_100_BIN2,
         a.Orden,
-        r.Listado,
+        CASE WHEN r.FechaPublicacion IS NULL THEN 1 ELSE 0 END,
         r.FechaPublicacion DESC,
         r.Origen,
+        r.Listado,
         r.VersionId,
         r.TablaOrdinal,
         r.FilaOrdinal,
