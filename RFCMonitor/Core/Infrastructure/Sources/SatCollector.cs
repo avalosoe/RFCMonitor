@@ -59,7 +59,7 @@ public sealed class SatCollector(SafeDownloader downloader,IPublicationRepositor
                 var result=await repository.ImportAsync(document,rows,ct);
                 var status = result.Changed ? "cambios" : "sin-cambios";
                 var issue = result.RejectedRows > 0
-                    ? $"{result.RejectedRows} fila(s) no consultable(s) por RFC; se conservaron en FilaFuente. {result.ReviewDetail ?? "Revise la cuarentena."}"
+                    ? $"{result.RejectedRows} fila(s) rechazadas. {result.ReviewDetail ?? ""}".Trim()
                     : null;
                 logger.LogInformation("Listado SAT {Key} finalizado exitosamente: estado={Status}, filas={Rows:N0}.", listing.Key, status, result.Rows);
                 results.Add(new(listing.Key,status,result.Rows,issue,result.VersionId,result.ReadRows,result.RejectedRows,result.CertifiedRows));

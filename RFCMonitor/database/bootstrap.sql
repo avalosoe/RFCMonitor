@@ -4,539 +4,687 @@ GO
 -- ============================================================================
 -- MonitorRFC - Script de Inicialización y Estructura (Bootstrap)
 -- ============================================================================
--- Define el modelo relacional completo para SQL Server, garantizando
--- idempotencia, soporte para identificadores ampliados (RFC hasta 100 caracteres
--- y valores no estructurados), nombres de contribuyente y estatus extendidos.
+-- Define el modelo relacional normalizado y de alto rendimiento para SQL Server,
+-- garantizando idempotencia, indentación limpia, columnas relacionales reales
+-- (sin almacenamiento redundante de JSON ni tablas de desecho), control de
+-- versiones por delta con hashing criptográfico y trazabilidad de eventos.
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
--- 1. Tablas de Catálogo y Configuración
+-- 1. Catálogos Base
 -- ----------------------------------------------------------------------------
 
 IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'Articulo' AND schema_id = SCHEMA_ID('dbo'))
 BEGIN
     CREATE TABLE dbo.Articulo (
-        Clave varchar(16) NOT NULL PRIMARY KEY,
-        Orden int NOT NULL
+        Clave   varchar(16) NOT NULL PRIMARY KEY,
+        Orden   int NOT NULL
     );
 END;
 GO
 
-IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'Fuente' AND schema_id = SCHEMA_ID('dbo'))
+-- Semilla de Artículos Fiscales
+IF NOT EXISTS (SELECT 1 FROM dbo.Articulo WHERE Clave = '69')
+    INSERT INTO dbo.Articulo (Clave, Orden) VALUES ('69', 1);
+
+IF NOT EXISTS (SELECT 1 FROM dbo.Articulo WHERE Clave = '69-b')
+    INSERT INTO dbo.Articulo (Clave, Orden) VALUES ('69-b', 2);
+
+IF NOT EXISTS (SELECT 1 FROM dbo.Articulo WHERE Clave = '69-b-bis')
+    INSERT INTO dbo.Articulo (Clave, Orden) VALUES ('69-b-bis', 3);
+
+IF NOT EXISTS (SELECT 1 FROM dbo.Articulo WHERE Clave = '49-bis')
+    INSERT INTO dbo.Articulo (Clave, Orden) VALUES ('49-bis', 4);
+GO
+
+-- ----------------------------------------------------------------------------
+-- 2. Control Operativo de Fuentes SAT
+-- ----------------------------------------------------------------------------
+
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'ControlFuenteSAT' AND schema_id = SCHEMA_ID('dbo'))
 BEGIN
-    CREATE TABLE dbo.Fuente (
-        FuenteKey nvarchar(100) NOT NULL PRIMARY KEY,
-        Origen varchar(8) NOT NULL,
-        Articulo varchar(16) NULL REFERENCES dbo.Articulo(Clave),
-        Listado varchar(100) NOT NULL,
-        Nombre nvarchar(500) NOT NULL,
-        Url nvarchar(2048) NOT NULL,
-        EsDocumento bit NOT NULL DEFAULT 0,
-        Habilitada bit NOT NULL DEFAULT 1
+    CREATE TABLE dbo.ControlFuenteSAT (
+        FuenteClave             varchar(100) NOT NULL PRIMARY KEY,
+        Articulo                varchar(16) NOT NULL REFERENCES dbo.Articulo(Clave),
+        Listado                 varchar(100) NOT NULL,
+        Nombre                  nvarchar(500) NOT NULL,
+        UrlPortal               nvarchar(2048) NOT NULL,
+        EsDocumento             bit NOT NULL DEFAULT 0,
+        Habilitada              bit NOT NULL DEFAULT 1,
+        FechaPublicacionPortal  date NULL,
+        UltimoHashArchivo       char(64) NULL,
+        UltimaDescargaExitosa   datetime2(3) NULL,
+        UltimoIntento           datetime2(3) NOT NULL DEFAULT SYSDATETIME(),
+        TotalRegistrosVigentes  int NOT NULL DEFAULT 0,
+        TotalNuevos             int NOT NULL DEFAULT 0,
+        TotalModificados        int NOT NULL DEFAULT 0,
+        TotalSinCambios         int NOT NULL DEFAULT 0,
+        Resultado               varchar(30) NOT NULL DEFAULT 'Pendiente',
+        UltimoError             nvarchar(2000) NULL
     );
 END;
 GO
 
 -- ----------------------------------------------------------------------------
--- 2. Tablas de Ingesta y Versiones de Publicaciones
+-- 3. Tabla Principal de Contribuyentes Vigentes (Estado Actual Relacional)
 -- ----------------------------------------------------------------------------
 
-IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'Publicacion' AND schema_id = SCHEMA_ID('dbo'))
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'ContribuyenteVigente' AND schema_id = SCHEMA_ID('dbo'))
 BEGIN
-    CREATE TABLE dbo.Publicacion (
-        PublicacionId bigint IDENTITY(1,1) PRIMARY KEY,
-        FuenteKey nvarchar(100) NOT NULL REFERENCES dbo.Fuente(FuenteKey),
-        ClaveExterna nvarchar(100) NOT NULL,
-        PrimeraDeteccion datetime2(3) NOT NULL,
-        VersionActivaId bigint NULL,
-        CONSTRAINT UQ_mrf_Publicacion UNIQUE (FuenteKey, ClaveExterna)
+    CREATE TABLE dbo.ContribuyenteVigente (
+        ContribuyenteId             bigint IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        Rfc                         nvarchar(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+        RazonSocial                 nvarchar(2000) NOT NULL,
+        Articulo                    varchar(16) NOT NULL REFERENCES dbo.Articulo(Clave),
+        Listado                     varchar(100) NOT NULL,
+        Situacion                   nvarchar(2000) NOT NULL,
+        FechaEfectiva               date NULL,
+        OrigenUltimaModificacion    varchar(8) NOT NULL CHECK (OrigenUltimaModificacion IN ('SAT', 'DOF')),
+        FechaModificacion           datetime2(3) NOT NULL DEFAULT SYSDATETIME(),
+        
+        -- Atributos Relacionales SAT General (Artículo 69 y genéricos)
+        TipoPersona                 varchar(20) NULL,
+        EntidadFederativa           nvarchar(1000) NULL,
+        Monto                       decimal(18,2) NULL,
+        Ejercicio                   varchar(50) NULL,
+        Periodo                     varchar(100) NULL,
+        Motivo                      nvarchar(2000) NULL,
+        FechaCancelacion            date NULL,
+        FechaAutorizacion           date NULL,
+        Administracion              nvarchar(500) NULL,
+        NumeroOficioSAT             nvarchar(200) NULL,
+        FechaOficioSAT              date NULL,
+        NumeroOficioDOF             nvarchar(200) NULL,
+        FechaOficioDOF              date NULL,
+
+        -- Atributos Relacionales Etapas 69-B y 69-B Bis
+        PresuncionOficioSAT         nvarchar(200) NULL,
+        PresuncionFechaSAT          date NULL,
+        PresuncionOficioDOF         nvarchar(200) NULL,
+        PresuncionFechaDOF          date NULL,
+        DesvirtuadoOficioSAT        nvarchar(200) NULL,
+        DesvirtuadoFechaSAT         date NULL,
+        DesvirtuadoOficioDOF        nvarchar(200) NULL,
+        DesvirtuadoFechaDOF         date NULL,
+        DefinitivoOficioSAT         nvarchar(200) NULL,
+        DefinitivoFechaSAT          date NULL,
+        DefinitivoOficioDOF         nvarchar(200) NULL,
+        DefinitivoFechaDOF          date NULL,
+        SentenciaOficioSAT          nvarchar(200) NULL,
+        SentenciaFechaSAT           date NULL,
+        SentenciaOficioDOF          nvarchar(200) NULL,
+        SentenciaFechaDOF           date NULL,
+
+        -- Control de Delta y Comparativa
+        HashFila                    binary(32) NOT NULL,
+        UltimaDescarga              datetime2(3) NOT NULL DEFAULT SYSDATETIME(),
+
+        CONSTRAINT UQ_ContribuyenteVigente_RfcArticuloListado UNIQUE (Rfc, Articulo, Listado)
     );
 END;
 GO
 
-IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'PublicacionVersion' AND schema_id = SCHEMA_ID('dbo'))
+-- Índices de Alto Rendimiento para ContribuyenteVigente
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ContribuyenteVigente_Rfc' AND object_id = OBJECT_ID('dbo.ContribuyenteVigente'))
 BEGIN
-    CREATE TABLE dbo.PublicacionVersion (
-        VersionId bigint IDENTITY(1,1) PRIMARY KEY,
-        PublicacionId bigint NOT NULL REFERENCES dbo.Publicacion(PublicacionId),
-        HashContenido char(64) NOT NULL,
-        ParserVersion varchar(40) NOT NULL,
-        Url nvarchar(2048) NOT NULL,
-        EvidenciaRuta nvarchar(2048) NOT NULL,
-        FechaFuente date NULL,
-        AlcanceFecha varchar(30) NOT NULL,
-        Detectada datetime2(3) NOT NULL,
-        Incorporada datetime2(3) NULL,
-        Estado varchar(20) NOT NULL DEFAULT 'preparando' CHECK (Estado IN ('preparando', 'publicada')),
-        Filas bigint NOT NULL DEFAULT 0,
-        FilasLeidas bigint NOT NULL DEFAULT 0,
-        FilasRechazadas bigint NOT NULL DEFAULT 0,
-        Certificacion varchar(30) NOT NULL DEFAULT 'pendiente' CHECK (Certificacion IN ('certificada', 'requiere-revision', 'pendiente')),
-        CodNota bigint NULL,
-        Titulo nvarchar(max) NULL,
-        Edicion nvarchar(100) NULL,
-        Organismo nvarchar(1000) NULL
-    );
+    CREATE INDEX IX_ContribuyenteVigente_Rfc 
+    ON dbo.ContribuyenteVigente(Rfc)
+    INCLUDE (RazonSocial, Articulo, Listado, Situacion, FechaEfectiva, OrigenUltimaModificacion);
 END;
 GO
 
-IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_mrf_ActiveVersion')
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ContribuyenteVigente_ArticuloListado' AND object_id = OBJECT_ID('dbo.ContribuyenteVigente'))
 BEGIN
-    ALTER TABLE dbo.Publicacion
-    ADD CONSTRAINT FK_mrf_ActiveVersion
-    FOREIGN KEY (VersionActivaId) REFERENCES dbo.PublicacionVersion(VersionId);
+    CREATE INDEX IX_ContribuyenteVigente_ArticuloListado 
+    ON dbo.ContribuyenteVigente(Articulo, Listado)
+    INCLUDE (Rfc, Situacion, FechaEfectiva);
 END;
 GO
 
--- ----------------------------------------------------------------------------
--- 3. Detalle de Registros, Archivos Fuente y Documentos
--- ----------------------------------------------------------------------------
-
-IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'RegistroFuente' AND schema_id = SCHEMA_ID('dbo'))
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ContribuyenteVigente_FechaEfectiva' AND object_id = OBJECT_ID('dbo.ContribuyenteVigente'))
 BEGIN
-    CREATE TABLE dbo.RegistroFuente (
-        RegistroId bigint IDENTITY(1,1) PRIMARY KEY,
-        VersionId bigint NOT NULL REFERENCES dbo.PublicacionVersion(VersionId),
-        TablaOrdinal int NOT NULL,
-        FilaOrdinal int NOT NULL,
-        Rfc nvarchar(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
-        NombreOriginal nvarchar(2000) NOT NULL,
-        Articulo varchar(16) NOT NULL REFERENCES dbo.Articulo(Clave),
-        Listado varchar(100) NOT NULL,
-        EstadoOriginal nvarchar(2000) NOT NULL,
-        FechaPublicacion date NULL,
-        EntidadOriginal nvarchar(1000) NULL,
-        DetalleJson nvarchar(max) NOT NULL CHECK (ISJSON(DetalleJson) = 1),
-        CONSTRAINT UQ_mrf_Fila UNIQUE (VersionId, TablaOrdinal, FilaOrdinal)
-    );
-END
-ELSE
-BEGIN
-    -- Asegurar ampliación de campos si la tabla ya existía
-    IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.RegistroFuente') AND name = 'Rfc' AND max_length < 200)
-    BEGIN
-        ALTER TABLE dbo.RegistroFuente ALTER COLUMN Rfc nvarchar(100) COLLATE Latin1_General_100_BIN2 NOT NULL;
-    END;
-    IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.RegistroFuente') AND name = 'NombreOriginal' AND max_length < 4000)
-    BEGIN
-        ALTER TABLE dbo.RegistroFuente ALTER COLUMN NombreOriginal nvarchar(2000) NOT NULL;
-    END;
-    IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.RegistroFuente') AND name = 'EstadoOriginal' AND max_length < 4000)
-    BEGIN
-        ALTER TABLE dbo.RegistroFuente ALTER COLUMN EstadoOriginal nvarchar(2000) NOT NULL;
-    END;
-    IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.RegistroFuente') AND name = 'EntidadOriginal' AND max_length < 2000)
-    BEGIN
-        ALTER TABLE dbo.RegistroFuente ALTER COLUMN EntidadOriginal nvarchar(1000) NULL;
-    END;
-END;
-GO
-
-IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'FilaFuente' AND schema_id = SCHEMA_ID('dbo'))
-BEGIN
-    CREATE TABLE dbo.FilaFuente (
-        VersionId bigint NOT NULL REFERENCES dbo.PublicacionVersion(VersionId),
-        TablaOrdinal int NOT NULL,
-        FilaOrdinal int NOT NULL,
-        RfcOriginal nvarchar(500) NULL,
-        EsValida bit NOT NULL,
-        MotivoRechazo nvarchar(2000) NULL,
-        DatosOriginalesJson nvarchar(max) NOT NULL CHECK (ISJSON(DatosOriginalesJson) = 1),
-        PRIMARY KEY (VersionId, TablaOrdinal, FilaOrdinal)
-    );
-END;
-GO
-
-IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'DocumentoCelda' AND schema_id = SCHEMA_ID('dbo'))
-BEGIN
-    CREATE TABLE dbo.DocumentoCelda (
-        VersionId bigint NOT NULL REFERENCES dbo.PublicacionVersion(VersionId),
-        HojaOrdinal int NOT NULL,
-        FilaOrdinal int NOT NULL,
-        ColumnaOrdinal int NOT NULL,
-        Hoja nvarchar(255) NOT NULL,
-        Valor nvarchar(max) NULL,
-        PRIMARY KEY (VersionId, HojaOrdinal, FilaOrdinal, ColumnaOrdinal)
-    );
-END;
-GO
-
-IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'ObservacionPublicacion' AND schema_id = SCHEMA_ID('dbo'))
-BEGIN
-    CREATE TABLE dbo.ObservacionPublicacion (
-        ObservacionId bigint IDENTITY(1,1) PRIMARY KEY,
-        VersionId bigint NOT NULL REFERENCES dbo.PublicacionVersion(VersionId),
-        Observada datetime2(3) NOT NULL,
-        FechaFuente date NULL,
-        AlcanceFecha varchar(30) NOT NULL,
-        Url nvarchar(2048) NOT NULL,
-        SinCambios bit NOT NULL
-    );
+    CREATE INDEX IX_ContribuyenteVigente_FechaEfectiva 
+    ON dbo.ContribuyenteVigente(FechaEfectiva DESC)
+    INCLUDE (Rfc, Articulo, Listado, Situacion);
 END;
 GO
 
 -- ----------------------------------------------------------------------------
--- 4. Operación del Servicio, Ejecuciones y Bloqueos
+-- 4. Tabla de Historial y Trazabilidad de Estados
 -- ----------------------------------------------------------------------------
 
-IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'Ejecucion' AND schema_id = SCHEMA_ID('dbo'))
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'ContribuyenteHistorial' AND schema_id = SCHEMA_ID('dbo'))
 BEGIN
-    CREATE TABLE dbo.Ejecucion (
-        EjecucionId uniqueidentifier NOT NULL PRIMARY KEY,
-        Inicio datetime2(3) NOT NULL,
-        Fin datetime2(3) NOT NULL,
-        Resultado varchar(30) NOT NULL,
-        Disparador varchar(30) NOT NULL,
-        ResumenJson nvarchar(max) NOT NULL CHECK (ISJSON(ResumenJson) = 1)
+    CREATE TABLE dbo.ContribuyenteHistorial (
+        HistorialId         bigint IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        Rfc                 nvarchar(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+        RazonSocial         nvarchar(2000) NOT NULL,
+        Articulo            varchar(16) NOT NULL REFERENCES dbo.Articulo(Clave),
+        Listado             varchar(100) NOT NULL,
+        Situacion           nvarchar(2000) NOT NULL,
+        FechaEfectiva       date NULL,
+        TipoEvento          varchar(50) NOT NULL CHECK (TipoEvento IN ('Alta Inicial', 'Cambio Situacion', 'Publicacion DOF', 'Actualizacion SAT')),
+        Origen              varchar(8) NOT NULL CHECK (Origen IN ('SAT', 'DOF')),
+        FechaRegistro       datetime2(3) NOT NULL DEFAULT SYSDATETIME(),
+        CodNotaDOF          bigint NULL,
+        UrlOrigen           nvarchar(2048) NULL,
+        NumeroOficioSAT     nvarchar(200) NULL,
+        FechaOficioSAT      date NULL,
+        NumeroOficioDOF     nvarchar(200) NULL,
+        FechaOficioDOF      date NULL,
+        EntidadFederativa   nvarchar(1000) NULL,
+        Motivo              nvarchar(2000) NULL,
+        HashFila            binary(32) NOT NULL
     );
 END;
 GO
 
-IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'FuenteEstado' AND schema_id = SCHEMA_ID('dbo'))
+-- Índices de Trazabilidad para ContribuyenteHistorial
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ContribuyenteHistorial_RfcArticulo' AND object_id = OBJECT_ID('dbo.ContribuyenteHistorial'))
 BEGIN
-    CREATE TABLE dbo.FuenteEstado (
-        FuenteKey nvarchar(100) NOT NULL PRIMARY KEY,
-        UltimoIntento datetime2(3) NOT NULL,
-        UltimoExito datetime2(3) NULL,
-        Resultado varchar(30) NOT NULL,
-        ErrorSeguro nvarchar(2000) NULL
+    CREATE INDEX IX_ContribuyenteHistorial_RfcArticulo 
+    ON dbo.ContribuyenteHistorial(Rfc, Articulo, FechaEfectiva DESC)
+    INCLUDE (Situacion, TipoEvento, Origen, CodNotaDOF);
+END;
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ContribuyenteHistorial_ArticuloListado' AND object_id = OBJECT_ID('dbo.ContribuyenteHistorial'))
+BEGIN
+    CREATE INDEX IX_ContribuyenteHistorial_ArticuloListado 
+    ON dbo.ContribuyenteHistorial(Articulo, Listado, FechaRegistro DESC);
+END;
+GO
+
+-- ----------------------------------------------------------------------------
+-- 5. Control de Cobertura y Operación SIDOF / DOF
+-- ----------------------------------------------------------------------------
+
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'ControlCoberturaDOF' AND schema_id = SCHEMA_ID('dbo'))
+BEGIN
+    CREATE TABLE dbo.ControlCoberturaDOF (
+        Fecha               date NOT NULL PRIMARY KEY,
+        Completa            bit NOT NULL,
+        FechaComprobacion   datetime2(3) NOT NULL DEFAULT SYSDATETIME(),
+        TotalNotasFiscales  int NOT NULL DEFAULT 0,
+        Detalle             nvarchar(2000) NULL
     );
 END;
 GO
 
-IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'CoberturaDof' AND schema_id = SCHEMA_ID('dbo'))
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'NotaPendienteDOF' AND schema_id = SCHEMA_ID('dbo'))
 BEGIN
-    CREATE TABLE dbo.CoberturaDof (
-        Fecha date NOT NULL PRIMARY KEY,
-        Completa bit NOT NULL,
-        Comprobada datetime2(3) NOT NULL,
-        Detalle nvarchar(2000) NULL
+    CREATE TABLE dbo.NotaPendienteDOF (
+        CodNota             bigint NOT NULL PRIMARY KEY,
+        Fecha               date NOT NULL,
+        Estado              varchar(30) NOT NULL,
+        Motivo              nvarchar(2000) NOT NULL,
+        UltimoIntento       datetime2(3) NOT NULL DEFAULT SYSDATETIME()
     );
 END;
 GO
 
-IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'ObjetivoCobertura' AND schema_id = SCHEMA_ID('dbo'))
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'AdjuntoDOF' AND schema_id = SCHEMA_ID('dbo'))
 BEGIN
-    CREATE TABLE dbo.ObjetivoCobertura (
-        Id tinyint PRIMARY KEY CHECK (Id = 1),
-        DofDesde date NOT NULL,
-        DofHasta date NOT NULL,
-        DofHabilitado bit NOT NULL
-    );
-END;
-GO
-
-IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'NotaPendiente' AND schema_id = SCHEMA_ID('dbo'))
-BEGIN
-    CREATE TABLE dbo.NotaPendiente (
-        CodNota bigint NOT NULL PRIMARY KEY,
-        Fecha date NOT NULL,
-        Estado varchar(30) NOT NULL,
-        Motivo nvarchar(2000) NOT NULL,
-        UltimoIntento datetime2(3) NOT NULL
-    );
-END;
-GO
-
-IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'Adjunto' AND schema_id = SCHEMA_ID('dbo'))
-BEGIN
-    CREATE TABLE dbo.Adjunto (
-        AdjuntoId bigint IDENTITY(1,1) PRIMARY KEY,
-        CodNota bigint NOT NULL,
-        Url nvarchar(2048) NOT NULL,
-        Estado varchar(30) NOT NULL,
-        EvidenciaRuta nvarchar(2048) NULL,
-        Motivo nvarchar(2000) NULL
-    );
-END;
-GO
-
-IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'Lease' AND schema_id = SCHEMA_ID('dbo'))
-BEGIN
-    CREATE TABLE dbo.Lease (
-        Recurso varchar(100) NOT NULL PRIMARY KEY,
-        Propietario uniqueidentifier NOT NULL,
-        FencingToken bigint NOT NULL,
-        Expira datetime2(3) NOT NULL
+    CREATE TABLE dbo.AdjuntoDOF (
+        AdjuntoId           bigint IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        CodNota             bigint NOT NULL,
+        Url                 nvarchar(2048) NOT NULL,
+        Estado              varchar(30) NOT NULL,
+        RutaArchivo         nvarchar(2048) NULL,
+        Motivo              nvarchar(2000) NULL
     );
 END;
 GO
 
 -- ----------------------------------------------------------------------------
--- 5. Generaciones Snapshot de la API
+-- 6. Documento Técnico Normativo Artículo 69 (Matriz Excel)
 -- ----------------------------------------------------------------------------
 
-IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'Generacion' AND schema_id = SCHEMA_ID('dbo'))
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'DocumentoTecnico69' AND schema_id = SCHEMA_ID('dbo'))
 BEGIN
-    CREATE TABLE dbo.Generacion (
-        GeneracionId bigint IDENTITY(1,1) PRIMARY KEY,
-        Creada datetime2(3) NOT NULL DEFAULT SYSDATETIME(),
-        FuentesJson nvarchar(max) NOT NULL CHECK (ISJSON(FuentesJson) = 1),
-        CoberturaJson nvarchar(max) NOT NULL CHECK (ISJSON(CoberturaJson) = 1)
-    );
-END;
-GO
-
-IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'GeneracionVersion' AND schema_id = SCHEMA_ID('dbo'))
-BEGIN
-    CREATE TABLE dbo.GeneracionVersion (
-        GeneracionId bigint NOT NULL REFERENCES dbo.Generacion(GeneracionId),
-        VersionId bigint NOT NULL REFERENCES dbo.PublicacionVersion(VersionId),
-        EsActiva bit NOT NULL,
-        PRIMARY KEY (GeneracionId, VersionId)
-    );
-END;
-GO
-
-IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'GeneracionActiva' AND schema_id = SCHEMA_ID('dbo'))
-BEGIN
-    CREATE TABLE dbo.GeneracionActiva (
-        Id tinyint NOT NULL PRIMARY KEY CHECK (Id = 1),
-        GeneracionId bigint NOT NULL REFERENCES dbo.Generacion(GeneracionId)
+    CREATE TABLE dbo.DocumentoTecnico69 (
+        HojaOrdinal         int NOT NULL,
+        FilaOrdinal         int NOT NULL,
+        ColumnaOrdinal      int NOT NULL,
+        Hoja                nvarchar(255) NOT NULL,
+        Valor               nvarchar(max) NULL,
+        FechaActualizacion  datetime2(3) NOT NULL DEFAULT SYSDATETIME(),
+        PRIMARY KEY (HojaOrdinal, FilaOrdinal, ColumnaOrdinal)
     );
 END;
 GO
 
 -- ----------------------------------------------------------------------------
--- 6. Tipos Definidos por el Usuario
+-- 7. Operación del Servicio, Ejecuciones y Bloqueo Concurrente
+-- ----------------------------------------------------------------------------
+
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'BitacoraEjecucion' AND schema_id = SCHEMA_ID('dbo'))
+BEGIN
+    CREATE TABLE dbo.BitacoraEjecucion (
+        EjecucionId         uniqueidentifier NOT NULL PRIMARY KEY,
+        Inicio              datetime2(3) NOT NULL,
+        Fin                 datetime2(3) NULL,
+        Disparador          varchar(50) NOT NULL,
+        Resultado           varchar(30) NOT NULL,
+        ResumenJson         nvarchar(max) NULL
+    );
+END;
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'BloqueoServicio' AND schema_id = SCHEMA_ID('dbo'))
+BEGIN
+    CREATE TABLE dbo.BloqueoServicio (
+        Recurso             varchar(100) NOT NULL PRIMARY KEY,
+        Propietario         uniqueidentifier NOT NULL,
+        FencingToken        bigint NOT NULL,
+        Expira              datetime2(3) NOT NULL
+    );
+END;
+GO
+
+-- ----------------------------------------------------------------------------
+-- 8. Tipos de Parámetro Definidos por el Usuario (TVP)
 -- ----------------------------------------------------------------------------
 
 IF TYPE_ID(N'dbo.RfcInput') IS NULL
 BEGIN
     CREATE TYPE dbo.RfcInput AS TABLE (
-        Rfc nvarchar(100) COLLATE Latin1_General_100_BIN2 NOT NULL PRIMARY KEY,
-        OrdenEntrada int NOT NULL
+        Rfc             nvarchar(100) COLLATE Latin1_General_100_BIN2 NOT NULL PRIMARY KEY,
+        OrdenEntrada    int NOT NULL
     );
 END;
 GO
 
 -- ----------------------------------------------------------------------------
--- 7. Índices de Rendimiento
+-- 9. Procedimiento Almacenado de Delta e Ingesta Masiva SAT
+-- ----------------------------------------------------------------------------
+-- Este procedimiento procesa la tabla de staging (#ContribuyenteStaging) creada
+-- durante el bulk copy del archivo descargado del SAT, comparando el HashFila.
+-- - Registros Nuevos: Se insertan en ContribuyenteVigente y ContribuyenteHistorial ('Alta Inicial').
+-- - Registros Modificados: Si la fecha efectiva o fecha portal es mayor o igual, se actualiza ContribuyenteVigente
+--   y se agrega un evento en ContribuyenteHistorial ('Cambio Situacion').
+-- - Registros Idénticos: Solo actualizan la marca UltimaDescarga. CERO filas en Historial.
 -- ----------------------------------------------------------------------------
 
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_mrf_Registro_VersionRfc' AND object_id = OBJECT_ID('dbo.RegistroFuente'))
-BEGIN
-    CREATE INDEX IX_mrf_Registro_VersionRfc 
-    ON dbo.RegistroFuente(VersionId, Rfc, Articulo, Listado);
-END;
-GO
-
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_mrf_Registro_Rfc' AND object_id = OBJECT_ID('dbo.RegistroFuente'))
-BEGIN
-    CREATE INDEX IX_mrf_Registro_Rfc 
-    ON dbo.RegistroFuente(Rfc, VersionId);
-END;
-GO
-
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_mrf_GeneracionVersion_Activa' AND object_id = OBJECT_ID('dbo.GeneracionVersion'))
-BEGIN
-    CREATE INDEX IX_mrf_GeneracionVersion_Activa 
-    ON dbo.GeneracionVersion(GeneracionId, VersionId) 
-    WHERE EsActiva = 1;
-END;
-GO
-
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_mrf_Version_Publicacion' AND object_id = OBJECT_ID('dbo.PublicacionVersion'))
-BEGIN
-    CREATE INDEX IX_mrf_Version_Publicacion 
-    ON dbo.PublicacionVersion(PublicacionId, VersionId);
-END;
-GO
-
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_mrf_FilaFuente_Rechazo' AND object_id = OBJECT_ID('dbo.FilaFuente'))
-BEGIN
-    CREATE INDEX IX_mrf_FilaFuente_Rechazo 
-    ON dbo.FilaFuente(VersionId, EsValida) 
-    INCLUDE(FilaOrdinal, RfcOriginal, MotivoRechazo);
-END;
-GO
-
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_mrf_ObservacionVersion' AND object_id = OBJECT_ID('dbo.ObservacionPublicacion'))
-BEGIN
-    CREATE INDEX IX_mrf_ObservacionVersion 
-    ON dbo.ObservacionPublicacion(VersionId, Observada DESC);
-END;
-GO
-
--- ----------------------------------------------------------------------------
--- 8. Datos Semilla (Artículos Fiscales)
--- ----------------------------------------------------------------------------
-
-IF NOT EXISTS (SELECT 1 FROM dbo.Articulo WHERE Clave = '69')
-    INSERT INTO dbo.Articulo(Clave, Orden) VALUES ('69', 1);
-
-IF NOT EXISTS (SELECT 1 FROM dbo.Articulo WHERE Clave = '69-b')
-    INSERT INTO dbo.Articulo(Clave, Orden) VALUES ('69-b', 2);
-
-IF NOT EXISTS (SELECT 1 FROM dbo.Articulo WHERE Clave = '69-b-bis')
-    INSERT INTO dbo.Articulo(Clave, Orden) VALUES ('69-b-bis', 3);
-
-IF NOT EXISTS (SELECT 1 FROM dbo.Articulo WHERE Clave = '49-bis')
-    INSERT INTO dbo.Articulo(Clave, Orden) VALUES ('49-bis', 4);
-GO
-
--- ----------------------------------------------------------------------------
--- 9. Funciones y Vistas
--- ----------------------------------------------------------------------------
-
-CREATE OR ALTER FUNCTION dbo.FilasGeneracion(
-    @GeneracionId bigint,
-    @Historico bit
-)
-RETURNS TABLE 
-AS 
-RETURN
-    SELECT 
-        r.RegistroId,
-        r.VersionId,
-        r.TablaOrdinal,
-        r.FilaOrdinal,
-        r.Rfc,
-        r.NombreOriginal,
-        r.Articulo,
-        r.Listado,
-        r.EstadoOriginal,
-        r.FechaPublicacion,
-        r.EntidadOriginal,
-        r.DetalleJson,
-        gv.EsActiva,
-        p.FuenteKey,
-        f.Origen,
-        v.CodNota,
-        v.Url
-    FROM dbo.GeneracionVersion gv
-    JOIN dbo.PublicacionVersion v ON v.VersionId = gv.VersionId
-    JOIN dbo.Publicacion p ON p.PublicacionId = v.PublicacionId
-    JOIN dbo.Fuente f ON f.FuenteKey = p.FuenteKey
-    JOIN dbo.RegistroFuente r ON r.VersionId = v.VersionId
-    WHERE gv.GeneracionId = @GeneracionId
-      AND (@Historico = 1 OR gv.EsActiva = 1);
-GO
-
-CREATE OR ALTER VIEW dbo.Vigentes 
+CREATE OR ALTER PROCEDURE dbo.AplicarCambiosSAT
+    @FuenteClave            varchar(100),
+    @Articulo               varchar(16),
+    @Listado                varchar(100),
+    @UrlPortal              nvarchar(2048),
+    @FechaPortal            date = NULL,
+    @HashArchivo            char(64) = NULL,
+    @TotalNuevos            int OUTPUT,
+    @TotalModificados       int OUTPUT,
+    @TotalSinCambios        int OUTPUT,
+    @TotalVigentes          int OUTPUT
 AS
-    SELECT r.* 
-    FROM dbo.GeneracionActiva a 
-    CROSS APPLY dbo.FilasGeneracion(a.GeneracionId, 0) r 
-    WHERE a.Id = 1;
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    -- Validar que la tabla de staging existe
+    IF OBJECT_ID('tempdb..#ContribuyenteStaging') IS NULL
+    BEGIN
+        THROW 50001, 'La tabla temporal #ContribuyenteStaging no fue encontrada.', 1;
+    END;
+
+    DECLARE @FechaHoraLocal datetime2(3) = SYSDATETIME();
+
+    -- 1. Insertar Contribuyentes Nuevos en ContribuyenteVigente
+    INSERT INTO dbo.ContribuyenteVigente (
+        Rfc, RazonSocial, Articulo, Listado, Situacion, FechaEfectiva,
+        OrigenUltimaModificacion, FechaModificacion, TipoPersona, EntidadFederativa,
+        Monto, Ejercicio, Periodo, Motivo, FechaCancelacion, FechaAutorizacion,
+        Administracion, NumeroOficioSAT, FechaOficioSAT, NumeroOficioDOF, FechaOficioDOF,
+        PresuncionOficioSAT, PresuncionFechaSAT, PresuncionOficioDOF, PresuncionFechaDOF,
+        DesvirtuadoOficioSAT, DesvirtuadoFechaSAT, DesvirtuadoOficioDOF, DesvirtuadoFechaDOF,
+        DefinitivoOficioSAT, DefinitivoFechaSAT, DefinitivoOficioDOF, DefinitivoFechaDOF,
+        SentenciaOficioSAT, SentenciaFechaSAT, SentenciaOficioDOF, SentenciaFechaDOF,
+        HashFila, UltimaDescarga
+    )
+    SELECT 
+        s.Rfc, s.RazonSocial, @Articulo, @Listado, s.Situacion, s.FechaEfectiva,
+        'SAT', @FechaHoraLocal, s.TipoPersona, s.EntidadFederativa,
+        s.Monto, s.Ejercicio, s.Periodo, s.Motivo, s.FechaCancelacion, s.FechaAutorizacion,
+        s.Administracion, s.NumeroOficioSAT, s.FechaOficioSAT, s.NumeroOficioDOF, s.FechaOficioDOF,
+        s.PresuncionOficioSAT, s.PresuncionFechaSAT, s.PresuncionOficioDOF, s.PresuncionFechaDOF,
+        s.DesvirtuadoOficioSAT, s.DesvirtuadoFechaSAT, s.DesvirtuadoOficioDOF, s.DesvirtuadoFechaDOF,
+        s.DefinitivoOficioSAT, s.DefinitivoFechaSAT, s.DefinitivoOficioDOF, s.DefinitivoFechaDOF,
+        s.SentenciaOficioSAT, s.SentenciaFechaSAT, s.SentenciaOficioDOF, s.SentenciaFechaDOF,
+        s.HashFila, @FechaHoraLocal
+    FROM #ContribuyenteStaging s
+    WHERE NOT EXISTS (
+        SELECT 1 
+        FROM dbo.ContribuyenteVigente v 
+        WHERE v.Rfc = s.Rfc AND v.Articulo = @Articulo AND v.Listado = @Listado
+    );
+
+    SET @TotalNuevos = @@ROWCOUNT;
+
+    -- Registrar evento 'Alta Inicial' en el Historial para los nuevos
+    IF @TotalNuevos > 0
+    BEGIN
+        INSERT INTO dbo.ContribuyenteHistorial (
+            Rfc, RazonSocial, Articulo, Listado, Situacion, FechaEfectiva,
+            TipoEvento, Origen, FechaRegistro, CodNotaDOF, UrlOrigen,
+            NumeroOficioSAT, FechaOficioSAT, NumeroOficioDOF, FechaOficioDOF,
+            EntidadFederativa, Motivo, HashFila
+        )
+        SELECT 
+            s.Rfc, s.RazonSocial, @Articulo, @Listado, s.Situacion, s.FechaEfectiva,
+            'Alta Inicial', 'SAT', @FechaHoraLocal, NULL, @UrlPortal,
+            s.NumeroOficioSAT, s.FechaOficioSAT, s.NumeroOficioDOF, s.FechaOficioDOF,
+            s.EntidadFederativa, s.Motivo, s.HashFila
+        FROM #ContribuyenteStaging s
+        JOIN dbo.ContribuyenteVigente v 
+          ON v.Rfc = s.Rfc AND v.Articulo = @Articulo AND v.Listado = @Listado
+        WHERE v.FechaModificacion = @FechaHoraLocal AND v.OrigenUltimaModificacion = 'SAT';
+    END;
+
+    -- 2. Detectar y Aplicar Registros Modificados (mismo RFC pero diferente HashFila)
+    -- Si la fecha efectiva del SAT es más reciente o igual a la actual, se actualiza el estatus vigente.
+    UPDATE v
+    SET 
+        v.RazonSocial = s.RazonSocial,
+        v.Situacion = s.Situacion,
+        v.FechaEfectiva = COALESCE(s.FechaEfectiva, v.FechaEfectiva),
+        v.OrigenUltimaModificacion = CASE 
+            WHEN s.FechaEfectiva >= v.FechaEfectiva OR v.FechaEfectiva IS NULL OR v.OrigenUltimaModificacion = 'SAT' 
+            THEN 'SAT' ELSE v.OrigenUltimaModificacion END,
+        v.FechaModificacion = @FechaHoraLocal,
+        v.TipoPersona = s.TipoPersona,
+        v.EntidadFederativa = s.EntidadFederativa,
+        v.Monto = s.Monto,
+        v.Ejercicio = s.Ejercicio,
+        v.Periodo = s.Periodo,
+        v.Motivo = s.Motivo,
+        v.FechaCancelacion = s.FechaCancelacion,
+        v.FechaAutorizacion = s.FechaAutorizacion,
+        v.Administracion = s.Administracion,
+        v.NumeroOficioSAT = s.NumeroOficioSAT,
+        v.FechaOficioSAT = s.FechaOficioSAT,
+        v.NumeroOficioDOF = s.NumeroOficioDOF,
+        v.FechaOficioDOF = s.FechaOficioDOF,
+        v.PresuncionOficioSAT = s.PresuncionOficioSAT,
+        v.PresuncionFechaSAT = s.PresuncionFechaSAT,
+        v.PresuncionOficioDOF = s.PresuncionOficioDOF,
+        v.PresuncionFechaDOF = s.PresuncionFechaDOF,
+        v.DesvirtuadoOficioSAT = s.DesvirtuadoOficioSAT,
+        v.DesvirtuadoFechaSAT = s.DesvirtuadoFechaSAT,
+        v.DesvirtuadoOficioDOF = s.DesvirtuadoOficioDOF,
+        v.DesvirtuadoFechaDOF = s.DesvirtuadoFechaDOF,
+        v.DefinitivoOficioSAT = s.DefinitivoOficioSAT,
+        v.DefinitivoFechaSAT = s.DefinitivoFechaSAT,
+        v.DefinitivoOficioDOF = s.DefinitivoOficioDOF,
+        v.DefinitivoFechaDOF = s.DefinitivoFechaDOF,
+        v.SentenciaOficioSAT = s.SentenciaOficioSAT,
+        v.SentenciaFechaSAT = s.SentenciaFechaSAT,
+        v.SentenciaOficioDOF = s.SentenciaOficioDOF,
+        v.SentenciaFechaDOF = s.SentenciaFechaDOF,
+        v.HashFila = s.HashFila,
+        v.UltimaDescarga = @FechaHoraLocal
+    FROM dbo.ContribuyenteVigente v
+    JOIN #ContribuyenteStaging s 
+      ON s.Rfc = v.Rfc AND v.Articulo = @Articulo AND v.Listado = @Listado
+    WHERE v.HashFila <> s.HashFila;
+
+    SET @TotalModificados = @@ROWCOUNT;
+
+    -- Registrar evento 'Cambio Situacion' en el Historial para los modificados
+    IF @TotalModificados > 0
+    BEGIN
+        INSERT INTO dbo.ContribuyenteHistorial (
+            Rfc, RazonSocial, Articulo, Listado, Situacion, FechaEfectiva,
+            TipoEvento, Origen, FechaRegistro, CodNotaDOF, UrlOrigen,
+            NumeroOficioSAT, FechaOficioSAT, NumeroOficioDOF, FechaOficioDOF,
+            EntidadFederativa, Motivo, HashFila
+        )
+        SELECT 
+            s.Rfc, s.RazonSocial, @Articulo, @Listado, s.Situacion, s.FechaEfectiva,
+            'Cambio Situacion', 'SAT', @FechaHoraLocal, NULL, @UrlPortal,
+            s.NumeroOficioSAT, s.FechaOficioSAT, s.NumeroOficioDOF, s.FechaOficioDOF,
+            s.EntidadFederativa, s.Motivo, s.HashFila
+        FROM #ContribuyenteStaging s
+        JOIN dbo.ContribuyenteVigente v 
+          ON v.Rfc = s.Rfc AND v.Articulo = @Articulo AND v.Listado = @Listado
+        WHERE v.FechaModificacion = @FechaHoraLocal AND v.HashFila = s.HashFila AND @TotalModificados > 0;
+    END;
+
+    -- 3. Actualizar marca de tiempo para registros Sin Cambios (CERO filas en Historial)
+    UPDATE v
+    SET v.UltimaDescarga = @FechaHoraLocal
+    FROM dbo.ContribuyenteVigente v
+    JOIN #ContribuyenteStaging s 
+      ON s.Rfc = v.Rfc AND v.Articulo = @Articulo AND v.Listado = @Listado
+    WHERE v.HashFila = s.HashFila AND v.UltimaDescarga < @FechaHoraLocal;
+
+    SET @TotalSinCambios = @@ROWCOUNT;
+
+    -- 4. Contar el total vigente actual de esta fuente
+    SELECT @TotalVigentes = COUNT(*) 
+    FROM dbo.ContribuyenteVigente 
+    WHERE Articulo = @Articulo AND Listado = @Listado;
+
+    -- 5. Actualizar el estado de ControlFuenteSAT
+    UPDATE dbo.ControlFuenteSAT
+    SET 
+        FechaPublicacionPortal  = COALESCE(@FechaPortal, FechaPublicacionPortal),
+        UltimoHashArchivo       = COALESCE(@HashArchivo, UltimoHashArchivo),
+        UltimaDescargaExitosa   = @FechaHoraLocal,
+        UltimoIntento           = @FechaHoraLocal,
+        TotalRegistrosVigentes  = @TotalVigentes,
+        TotalNuevos             = @TotalNuevos,
+        TotalModificados        = @TotalModificados,
+        TotalSinCambios         = @TotalSinCambios,
+        Resultado               = CASE WHEN @TotalNuevos > 0 OR @TotalModificados > 0 THEN 'cambios' ELSE 'sin-cambios' END,
+        UltimoError             = NULL
+    WHERE FuenteClave = @FuenteClave;
+
+    IF @@ROWCOUNT = 0
+    BEGIN
+        INSERT INTO dbo.ControlFuenteSAT (
+            FuenteClave, Articulo, Listado, Nombre, UrlPortal, EsDocumento, Habilitada,
+            FechaPublicacionPortal, UltimoHashArchivo, UltimaDescargaExitosa, UltimoIntento,
+            TotalRegistrosVigentes, TotalNuevos, TotalModificados, TotalSinCambios, Resultado
+        )
+        VALUES (
+            @FuenteClave, @Articulo, @Listado, @FuenteClave, @UrlPortal, 0, 1,
+            @FechaPortal, @HashArchivo, @FechaHoraLocal, @FechaHoraLocal,
+            @TotalVigentes, @TotalNuevos, @TotalModificados, @TotalSinCambios,
+            CASE WHEN @TotalNuevos > 0 OR @TotalModificados > 0 THEN 'cambios' ELSE 'sin-cambios' END
+        );
+    END;
+END;
 GO
 
 -- ----------------------------------------------------------------------------
--- 10. Procedimientos Almacenados de Consulta y API
+-- 10. Procedimiento Almacenado para Ingesta y Trazabilidad DOF
+-- ----------------------------------------------------------------------------
+-- Registra una publicación oficial del DOF en el historial del RFC y evalúa
+-- si la fecha efectiva es más reciente que el estatus vigente actual para
+-- actualizar ContribuyenteVigente.
 -- ----------------------------------------------------------------------------
 
-CREATE OR ALTER PROCEDURE dbo.Encabezado
+CREATE OR ALTER PROCEDURE dbo.AplicarPublicacionDOF
+    @Rfc                nvarchar(100),
+    @RazonSocial        nvarchar(2000),
+    @Articulo           varchar(16),
+    @Listado            varchar(100),
+    @Situacion          nvarchar(2000),
+    @FechaEfectiva      date,
+    @CodNotaDOF         bigint,
+    @UrlOrigen          nvarchar(2048),
+    @NumeroOficioDOF    nvarchar(200) = NULL,
+    @EntidadFederativa  nvarchar(1000) = NULL,
+    @Motivo             nvarchar(2000) = NULL,
+    @HashFila           binary(32)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @FechaHoraLocal datetime2(3) = SYSDATETIME();
+
+    -- 1. Siempre registrar en el Historial para trazabilidad completa
+    INSERT INTO dbo.ContribuyenteHistorial (
+        Rfc, RazonSocial, Articulo, Listado, Situacion, FechaEfectiva,
+        TipoEvento, Origen, FechaRegistro, CodNotaDOF, UrlOrigen,
+        NumeroOficioSAT, FechaOficioSAT, NumeroOficioDOF, FechaOficioDOF,
+        EntidadFederativa, Motivo, HashFila
+    )
+    VALUES (
+        @Rfc, @RazonSocial, @Articulo, @Listado, @Situacion, @FechaEfectiva,
+        'Publicacion DOF', 'DOF', @FechaHoraLocal, @CodNotaDOF, @UrlOrigen,
+        NULL, NULL, @NumeroOficioDOF, @FechaEfectiva,
+        @EntidadFederativa, @Motivo, @HashFila
+    );
+
+    -- 2. Evaluar y Actualizar/Insertar en ContribuyenteVigente
+    -- Si no existe en vigentes para este artículo, se inserta
+    IF NOT EXISTS (SELECT 1 FROM dbo.ContribuyenteVigente WHERE Rfc = @Rfc AND Articulo = @Articulo AND Listado = @Listado)
+    BEGIN
+        INSERT INTO dbo.ContribuyenteVigente (
+            Rfc, RazonSocial, Articulo, Listado, Situacion, FechaEfectiva,
+            OrigenUltimaModificacion, FechaModificacion, TipoPersona, EntidadFederativa,
+            NumeroOficioDOF, FechaOficioDOF, HashFila, UltimaDescarga
+        )
+        VALUES (
+            @Rfc, @RazonSocial, @Articulo, @Listado, @Situacion, @FechaEfectiva,
+            'DOF', @FechaHoraLocal, NULL, @EntidadFederativa,
+            @NumeroOficioDOF, @FechaEfectiva, @HashFila, @FechaHoraLocal
+        );
+    END
+    ELSE
+    BEGIN
+        -- Si existe, se actualiza solo si la fecha del DOF es más reciente o igual a la fecha efectiva registrada
+        UPDATE dbo.ContribuyenteVigente
+        SET 
+            RazonSocial                 = @RazonSocial,
+            Situacion                   = @Situacion,
+            FechaEfectiva               = @FechaEfectiva,
+            OrigenUltimaModificacion    = 'DOF',
+            FechaModificacion           = @FechaHoraLocal,
+            NumeroOficioDOF             = COALESCE(@NumeroOficioDOF, NumeroOficioDOF),
+            FechaOficioDOF              = @FechaEfectiva,
+            EntidadFederativa           = COALESCE(@EntidadFederativa, EntidadFederativa),
+            HashFila                    = @HashFila
+        WHERE Rfc = @Rfc 
+          AND Articulo = @Articulo 
+          AND Listado = @Listado
+          AND (@FechaEfectiva >= FechaEfectiva OR FechaEfectiva IS NULL);
+    END;
+END;
+GO
+
+-- ----------------------------------------------------------------------------
+-- 11. Procedimientos Almacenados de Consulta / API Consolidada
+-- ----------------------------------------------------------------------------
+
+CREATE OR ALTER PROCEDURE dbo.ConsultarContribuyentesVigentes
+    @Articulo       varchar(16) = NULL,
+    @Listado        varchar(100) = NULL,
+    @FiltrarRfc     bit = 0,
+    @Rfcs           dbo.RfcInput READONLY
 AS
 BEGIN
     SET NOCOUNT ON;
 
     SELECT 
-        g.GeneracionId,
-        g.Creada,
-        g.FuentesJson,
-        g.CoberturaJson 
-    FROM dbo.GeneracionActiva a 
-    JOIN dbo.Generacion g ON g.GeneracionId = a.GeneracionId 
-    WHERE a.Id = 1;
-END;
-GO
-
-CREATE OR ALTER PROCEDURE dbo.Apariciones
-    @GeneracionId bigint,
-    @Articulo varchar(16) = NULL,
-    @Listado varchar(100) = NULL,
-    @Historico bit = 0,
-    @FiltrarRfc bit = 0,
-    @Rfcs dbo.RfcInput READONLY
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    SELECT 
-        r.RegistroId,
-        r.VersionId,
-        r.FuenteKey,
-        r.Origen,
-        r.Articulo,
-        r.Listado,
-        r.Rfc,
-        r.NombreOriginal,
-        r.EstadoOriginal,
-        r.FechaPublicacion,
-        CONVERT(bit, 1 - r.EsActiva) AS Historica,
-        r.CodNota,
-        r.Url,
-        r.TablaOrdinal,
-        r.FilaOrdinal,
-        r.DetalleJson
-    FROM dbo.FilasGeneracion(@GeneracionId, @Historico) r 
-    JOIN dbo.Articulo a ON a.Clave = r.Articulo
-    WHERE (@Articulo IS NULL OR r.Articulo = @Articulo) 
-      AND (@Listado IS NULL OR r.Listado = @Listado)
-      AND (@FiltrarRfc = 0 OR EXISTS (SELECT 1 FROM @Rfcs i WHERE i.Rfc = r.Rfc))
+        v.ContribuyenteId,
+        v.Rfc,
+        v.RazonSocial,
+        v.Articulo,
+        v.Listado,
+        v.Situacion,
+        v.FechaEfectiva,
+        v.OrigenUltimaModificacion,
+        v.FechaModificacion,
+        v.TipoPersona,
+        v.EntidadFederativa,
+        v.Monto,
+        v.Ejercicio,
+        v.Periodo,
+        v.Motivo,
+        v.FechaCancelacion,
+        v.FechaAutorizacion,
+        v.Administracion,
+        v.NumeroOficioSAT,
+        v.FechaOficioSAT,
+        v.NumeroOficioDOF,
+        v.FechaOficioDOF,
+        v.PresuncionOficioSAT,
+        v.PresuncionFechaSAT,
+        v.PresuncionOficioDOF,
+        v.PresuncionFechaDOF,
+        v.DesvirtuadoOficioSAT,
+        v.DesvirtuadoFechaSAT,
+        v.DesvirtuadoOficioDOF,
+        v.DesvirtuadoFechaDOF,
+        v.DefinitivoOficioSAT,
+        v.DefinitivoFechaSAT,
+        v.DefinitivoOficioDOF,
+        v.DefinitivoFechaDOF,
+        v.SentenciaOficioSAT,
+        v.SentenciaFechaSAT,
+        v.SentenciaOficioDOF,
+        v.SentenciaFechaDOF,
+        v.UltimaDescarga
+    FROM dbo.ContribuyenteVigente v
+    JOIN dbo.Articulo a ON a.Clave = v.Articulo
+    WHERE (@Articulo IS NULL OR v.Articulo = @Articulo)
+      AND (@Listado IS NULL OR v.Listado = @Listado)
+      AND (@FiltrarRfc = 0 OR EXISTS (SELECT 1 FROM @Rfcs r WHERE r.Rfc = v.Rfc))
     ORDER BY 
-        r.Rfc COLLATE Latin1_General_100_BIN2,
+        v.Rfc COLLATE Latin1_General_100_BIN2,
         a.Orden,
-        CASE WHEN r.FechaPublicacion IS NULL THEN 1 ELSE 0 END,
-        r.FechaPublicacion DESC,
-        r.Origen,
-        r.Listado,
-        r.VersionId,
-        r.TablaOrdinal,
-        r.FilaOrdinal,
-        r.RegistroId 
-    OPTION(RECOMPILE);
+        CASE WHEN v.FechaEfectiva IS NULL THEN 1 ELSE 0 END,
+        v.FechaEfectiva DESC,
+        v.Listado
+    OPTION (RECOMPILE);
 END;
 GO
 
-CREATE OR ALTER PROCEDURE dbo.Conteos
-    @GeneracionId bigint,
-    @Articulo varchar(16) = NULL,
-    @Listado varchar(100) = NULL,
-    @Historico bit = 0,
-    @FiltrarRfc bit = 0,
-    @Rfcs dbo.RfcInput READONLY
+CREATE OR ALTER PROCEDURE dbo.ConsultarContribuyenteHistorial
+    @Rfc            nvarchar(100),
+    @Articulo       varchar(16) = NULL,
+    @Listado        varchar(100) = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
 
     SELECT 
-        COUNT_BIG(DISTINCT r.Rfc) AS Rfcs,
-        COUNT_BIG(*) AS Apariciones 
-    FROM dbo.FilasGeneracion(@GeneracionId, @Historico) r
-    WHERE (@Articulo IS NULL OR r.Articulo = @Articulo) 
-      AND (@Listado IS NULL OR r.Listado = @Listado)
-      AND (@FiltrarRfc = 0 OR EXISTS (SELECT 1 FROM @Rfcs i WHERE i.Rfc = r.Rfc)) 
-    OPTION(RECOMPILE);
-END;
-GO
-
-CREATE OR ALTER PROCEDURE dbo.DocumentoTecnico
-    @GeneracionId bigint
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    SELECT 
-        c.VersionId,
-        c.HojaOrdinal,
-        c.FilaOrdinal,
-        c.ColumnaOrdinal,
-        c.Hoja,
-        c.Valor
-    FROM dbo.GeneracionVersion v 
-    JOIN dbo.DocumentoCelda c ON c.VersionId = v.VersionId 
-    WHERE v.GeneracionId = @GeneracionId 
-      AND v.EsActiva = 1
+        h.HistorialId,
+        h.Rfc,
+        h.RazonSocial,
+        h.Articulo,
+        h.Listado,
+        h.Situacion,
+        h.FechaEfectiva,
+        h.TipoEvento,
+        h.Origen,
+        h.FechaRegistro,
+        h.CodNotaDOF,
+        h.UrlOrigen,
+        h.NumeroOficioSAT,
+        h.FechaOficioSAT,
+        h.NumeroOficioDOF,
+        h.FechaOficioDOF,
+        h.EntidadFederativa,
+        h.Motivo
+    FROM dbo.ContribuyenteHistorial h
+    JOIN dbo.Articulo a ON a.Clave = h.Articulo
+    WHERE h.Rfc = @Rfc
+      AND (@Articulo IS NULL OR h.Articulo = @Articulo)
+      AND (@Listado IS NULL OR h.Listado = @Listado)
     ORDER BY 
-        c.VersionId,
-        c.HojaOrdinal,
-        c.FilaOrdinal,
-        c.ColumnaOrdinal;
+        a.Orden,
+        CASE WHEN h.FechaEfectiva IS NULL THEN 1 ELSE 0 END,
+        h.FechaEfectiva DESC,
+        h.FechaRegistro DESC;
 END;
 GO
 
-CREATE OR ALTER PROCEDURE dbo.EstadoFuentes
+CREATE OR ALTER PROCEDURE dbo.ConsultarEstatusGeneral
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -545,67 +693,53 @@ BEGIN
         SELECT 
             JSON_QUERY((
                 SELECT 
-                    f.FuenteKey AS fuente,
-                    f.Origen AS origen,
-                    f.Articulo AS articulo,
-                    f.Listado AS listado,
-                    e.UltimoIntento AS ultimoIntento,
-                    e.UltimoExito AS ultimoExito,
-                    e.Resultado AS resultado,
-                    e.ErrorSeguro AS error,
-                    s.registrosAceptados,
-                    s.filasLeidas,
-                    s.filasRechazadas,
-                    s.certificacion,
-                    s.incorporadaEn
-                FROM dbo.Fuente f 
-                LEFT JOIN dbo.FuenteEstado e ON e.FuenteKey = f.FuenteKey
-                OUTER APPLY (
-                    SELECT 
-                        SUM(v.Filas) AS registrosAceptados,
-                        SUM(v.FilasLeidas) AS filasLeidas,
-                        SUM(v.FilasRechazadas) AS filasRechazadas,
-                        CASE 
-                            WHEN MAX(CASE WHEN v.Certificacion = 'requiere-revision' THEN 1 ELSE 0 END) = 1 THEN 'requiere-revision'
-                            WHEN MIN(CASE WHEN v.Certificacion = 'certificada' THEN 1 ELSE 0 END) = 1 THEN 'certificada' 
-                            ELSE 'pendiente' 
-                        END AS certificacion,
-                        MAX(v.Incorporada) AS incorporadaEn
-                    FROM dbo.Publicacion p 
-                    JOIN dbo.PublicacionVersion v ON v.VersionId = p.VersionActivaId 
-                    WHERE p.FuenteKey = f.FuenteKey
-                ) s 
-                ORDER BY f.FuenteKey 
+                    f.FuenteClave               AS fuente,
+                    f.Articulo                  AS articulo,
+                    f.Listado                   AS listado,
+                    f.Nombre                    AS nombre,
+                    f.FechaPublicacionPortal    AS fechaPortal,
+                    f.UltimoIntento             AS ultimoIntento,
+                    f.UltimaDescargaExitosa     AS ultimaDescargaExitosa,
+                    f.Resultado                 AS resultado,
+                    f.UltimoError               AS error,
+                    f.TotalRegistrosVigentes    AS registrosVigentes,
+                    f.TotalNuevos               AS nuevos,
+                    f.TotalModificados          AS modificados,
+                    f.TotalSinCambios           AS sinCambios
+                FROM dbo.ControlFuenteSAT f
+                ORDER BY f.FuenteClave
                 FOR JSON PATH
-            )) AS fuentes,
+            )) AS fuentesSat,
             JSON_QUERY((
                 SELECT 
-                    Fecha AS fecha,
-                    Completa AS completa,
-                    Comprobada AS comprobada,
-                    Detalle AS detalle 
-                FROM dbo.CoberturaDof 
-                ORDER BY Fecha 
+                    Fecha               AS fecha,
+                    Completa            AS completa,
+                    FechaComprobacion   AS comprobada,
+                    TotalNotasFiscales  AS totalNotas,
+                    Detalle             AS detalle
+                FROM dbo.ControlCoberturaDOF
+                ORDER BY Fecha DESC
                 FOR JSON PATH
-            )) AS cobertura,
+            )) AS coberturaDof,
             JSON_QUERY((
                 SELECT 
-                    CodNota AS codNota,
-                    Fecha AS fecha,
-                    Estado AS estado,
-                    Motivo AS motivo 
-                FROM dbo.NotaPendiente 
-                ORDER BY Fecha, CodNota 
+                    CodNota         AS codNota,
+                    Fecha           AS fecha,
+                    Estado          AS estado,
+                    Motivo          AS motivo,
+                    UltimoIntento   AS ultimoIntento
+                FROM dbo.NotaPendienteDOF
+                ORDER BY Fecha DESC, CodNota
                 FOR JSON PATH
-            )) AS pendientes,
+            )) AS notasPendientesDof,
             JSON_QUERY((
-                SELECT TOP(1) 
+                SELECT TOP(1)
                     EjecucionId AS ejecucionId,
-                    Inicio AS inicio,
-                    Fin AS fin,
-                    Resultado AS resultado 
-                FROM dbo.Ejecucion 
-                ORDER BY Fin DESC 
+                    Inicio      AS inicio,
+                    Fin         AS fin,
+                    Resultado   AS resultado
+                FROM dbo.BitacoraEjecucion
+                ORDER BY Inicio DESC
                 FOR JSON PATH
             )) AS ultimaEjecucion
         FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
@@ -613,124 +747,172 @@ BEGIN
 END;
 GO
 
-CREATE OR ALTER PROCEDURE dbo.PublicarGeneracion
-    @Propietario uniqueidentifier,
-    @Token bigint
+-- ----------------------------------------------------------------------------
+-- 12. Procedimientos y Vistas de Compatibilidad Retroactiva con el API
+-- ----------------------------------------------------------------------------
+-- Permiten que los endpoints actuales de la API sigan consumiendo contratos
+-- estables mientras se transita a las nuevas estructuras directas.
+-- ----------------------------------------------------------------------------
+
+CREATE OR ALTER PROCEDURE dbo.Encabezado
 AS
 BEGIN
     SET NOCOUNT ON;
-    SET XACT_ABORT ON;
-    BEGIN TRANSACTION;
 
-    IF APPLOCK_MODE('public', 'MonitorRFC.ingestion', 'Session') <> 'Exclusive' 
-       OR NOT EXISTS (SELECT 1 FROM dbo.Lease WITH(UPDLOCK, HOLDLOCK) WHERE Recurso = 'ingestion' AND Propietario = @Propietario AND FencingToken = @Token)
-    BEGIN
-        ROLLBACK;
-        THROW 51000, 'Lease de ingesta perdido.', 1;
-    END;
-
-    DECLARE @Fuentes nvarchar(max) = (
-        SELECT 
-            CASE 
-                WHEN f.Origen = 'DOF' AND ra.Articulo IS NOT NULL THEN CONCAT('dof:', ra.Articulo, ':publicaciones-dof') 
-                ELSE f.FuenteKey 
-            END AS fuenteId,
-            f.Origen AS origen,
-            COALESCE(ra.Articulo, f.Articulo) AS articulo,
-            f.Listado AS listado,
-            f.Nombre AS nombre,
-            f.EsDocumento AS esDocumento,
-            f.Habilitada AS habilitada,
-            v.VersionId AS versionId,
-            v.FechaFuente AS fechaActualizacionFuente,
-            v.AlcanceFecha AS alcanceFecha,
-            p.PrimeraDeteccion AS primeraDeteccion,
-            v.Detectada AS detectadaEn,
-            v.Incorporada AS incorporadaEn,
-            v.HashContenido AS hashContenido,
-            v.ParserVersion AS parserVersion,
-            v.Filas AS registros,
-            v.Url AS url,
-            v.CodNota AS codNota,
-            CONVERT(bit, CASE WHEN v.VersionId IS NOT NULL AND v.VersionId <> p.VersionActivaId THEN 1 ELSE 0 END) AS esHistorica
-        FROM dbo.Fuente f 
-        LEFT JOIN dbo.Publicacion p ON p.FuenteKey = f.FuenteKey 
-        LEFT JOIN dbo.PublicacionVersion v ON v.PublicacionId = p.PublicacionId AND v.Estado = 'publicada'
-        OUTER APPLY (
-            SELECT DISTINCT r.Articulo 
-            FROM dbo.RegistroFuente r 
-            WHERE r.VersionId = v.VersionId AND f.Origen = 'DOF'
-        ) ra 
-        ORDER BY f.FuenteKey, v.VersionId, ra.Articulo 
-        FOR JSON PATH, INCLUDE_NULL_VALUES
-    );
-
-    DECLARE @Desde date, @Hasta date, @Dof bit;
-    SELECT @Desde = DofDesde, @Hasta = DofHasta, @Dof = DofHabilitado 
-    FROM dbo.ObjetivoCobertura 
-    WHERE Id = 1;
-
-    DECLARE @Dias int = (
-        SELECT COUNT(*) 
-        FROM dbo.CoberturaDof 
-        WHERE Fecha BETWEEN @Desde AND @Hasta AND Completa = 1
-    );
-
-    DECLARE @Cobertura nvarchar(max) = (
-        SELECT 
-            CASE 
-                WHEN NOT EXISTS(SELECT 1 FROM dbo.Fuente f WHERE f.Origen = 'SAT' AND f.Habilitada = 1) THEN 'deshabilitada'
-                WHEN EXISTS(SELECT 1 FROM dbo.Fuente f WHERE f.Origen = 'SAT' AND f.Habilitada = 1 AND NOT EXISTS(SELECT 1 FROM dbo.Publicacion p WHERE p.FuenteKey = f.FuenteKey AND p.VersionActivaId IS NOT NULL)) THEN 'parcial' 
-                ELSE 'completa' 
-            END AS sat,
-            JSON_QUERY((
-                SELECT 
-                    @Desde AS desde,
-                    @Hasta AS hasta,
-                    @Dof AS habilitado,
-                    CONVERT(bit, CASE WHEN @Dof = 1 AND @Dias = DATEDIFF(day, @Desde, @Hasta) + 1 AND NOT EXISTS(SELECT 1 FROM dbo.NotaPendiente WHERE Fecha BETWEEN @Desde AND @Hasta) THEN 1 ELSE 0 END) AS completa,
-                    (SELECT COUNT(*) FROM dbo.NotaPendiente WHERE Fecha BETWEEN @Desde AND @Hasta) AS pendientes,
-                    JSON_QUERY((
-                        SELECT 
-                            Fecha AS fecha,
-                            Completa AS completa,
-                            Comprobada AS comprobada,
-                            Detalle AS detalle 
-                        FROM dbo.CoberturaDof 
-                        ORDER BY Fecha 
-                        FOR JSON PATH
-                    )) AS dias 
-                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
-            )) AS dof 
-        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
-    );
-
-    INSERT INTO dbo.Generacion (FuentesJson, CoberturaJson) 
-    VALUES (@Fuentes, @Cobertura);
-
-    DECLARE @Id bigint = SCOPE_IDENTITY();
-
-    INSERT INTO dbo.GeneracionVersion (GeneracionId, VersionId, EsActiva) 
     SELECT 
-        @Id,
-        v.VersionId,
-        CONVERT(bit, CASE WHEN p.VersionActivaId = v.VersionId THEN 1 ELSE 0 END) 
-    FROM dbo.PublicacionVersion v 
-    JOIN dbo.Publicacion p ON p.PublicacionId = v.PublicacionId 
-    WHERE v.Estado = 'publicada';
+        1 AS GeneracionId,
+        SYSDATETIME() AS Creada,
+        N'[]' AS FuentesJson,
+        N'{}' AS CoberturaJson;
+END;
+GO
 
-    UPDATE dbo.GeneracionActiva 
-    SET GeneracionId = @Id 
-    WHERE Id = 1;
+CREATE OR ALTER PROCEDURE dbo.Apariciones
+    @GeneracionId   bigint = 1,
+    @Articulo       varchar(16) = NULL,
+    @Listado        varchar(100) = NULL,
+    @Historico      bit = 0,
+    @FiltrarRfc     bit = 0,
+    @Rfcs           dbo.RfcInput READONLY
+AS
+BEGIN
+    SET NOCOUNT ON;
 
-    IF @@ROWCOUNT = 0 
+    IF @Historico = 0
     BEGIN
-        INSERT INTO dbo.GeneracionActiva (Id, GeneracionId) 
-        VALUES (1, @Id);
+        SELECT 
+            v.ContribuyenteId           AS RegistroId,
+            1                           AS VersionId,
+            v.Listado                   AS FuenteKey,
+            v.OrigenUltimaModificacion  AS Origen,
+            v.Articulo                  AS Articulo,
+            v.Listado                   AS Listado,
+            v.Rfc                       AS Rfc,
+            v.RazonSocial               AS NombreOriginal,
+            v.Situacion                 AS EstadoOriginal,
+            v.FechaEfectiva             AS FechaPublicacion,
+            CONVERT(bit, 0)             AS Historica,
+            CONVERT(bigint, NULL)       AS CodNota,
+            N''                         AS Url,
+            0                           AS TablaOrdinal,
+            0                           AS FilaOrdinal,
+            N'{}'                       AS DetalleJson
+        FROM dbo.ContribuyenteVigente v
+        JOIN dbo.Articulo a ON a.Clave = v.Articulo
+        WHERE (@Articulo IS NULL OR v.Articulo = @Articulo)
+          AND (@Listado IS NULL OR v.Listado = @Listado)
+          AND (@FiltrarRfc = 0 OR EXISTS (SELECT 1 FROM @Rfcs r WHERE r.Rfc = v.Rfc))
+        ORDER BY 
+            v.Rfc COLLATE Latin1_General_100_BIN2,
+            a.Orden,
+            CASE WHEN v.FechaEfectiva IS NULL THEN 1 ELSE 0 END,
+            v.FechaEfectiva DESC,
+            v.Listado
+        OPTION (RECOMPILE);
+    END
+    ELSE
+    BEGIN
+        SELECT 
+            h.HistorialId               AS RegistroId,
+            1                           AS VersionId,
+            h.Listado                   AS FuenteKey,
+            h.Origen                    AS Origen,
+            h.Articulo                  AS Articulo,
+            h.Listado                   AS Listado,
+            h.Rfc                       AS Rfc,
+            h.RazonSocial               AS NombreOriginal,
+            h.Situacion                 AS EstadoOriginal,
+            h.FechaEfectiva             AS FechaPublicacion,
+            CONVERT(bit, CASE WHEN h.TipoEvento = 'Alta Inicial' THEN 0 ELSE 1 END) AS Historica,
+            h.CodNotaDOF                AS CodNota,
+            COALESCE(h.UrlOrigen, N'')  AS Url,
+            0                           AS TablaOrdinal,
+            0                           AS FilaOrdinal,
+            N'{}'                       AS DetalleJson
+        FROM dbo.ContribuyenteHistorial h
+        JOIN dbo.Articulo a ON a.Clave = h.Articulo
+        WHERE (@Articulo IS NULL OR h.Articulo = @Articulo)
+          AND (@Listado IS NULL OR h.Listado = @Listado)
+          AND (@FiltrarRfc = 0 OR EXISTS (SELECT 1 FROM @Rfcs r WHERE r.Rfc = h.Rfc))
+        ORDER BY 
+            h.Rfc COLLATE Latin1_General_100_BIN2,
+            a.Orden,
+            CASE WHEN h.FechaEfectiva IS NULL THEN 1 ELSE 0 END,
+            h.FechaEfectiva DESC,
+            h.FechaRegistro DESC
+        OPTION (RECOMPILE);
     END;
+END;
+GO
 
-    COMMIT;
+CREATE OR ALTER PROCEDURE dbo.Conteos
+    @GeneracionId   bigint = 1,
+    @Articulo       varchar(16) = NULL,
+    @Listado        varchar(100) = NULL,
+    @Historico      bit = 0,
+    @FiltrarRfc     bit = 0,
+    @Rfcs           dbo.RfcInput READONLY
+AS
+BEGIN
+    SET NOCOUNT ON;
 
-    SELECT @Id;
+    IF @Historico = 0
+    BEGIN
+        SELECT 
+            COUNT_BIG(DISTINCT v.Rfc) AS Rfcs,
+            COUNT_BIG(*)              AS Apariciones
+        FROM dbo.ContribuyenteVigente v
+        WHERE (@Articulo IS NULL OR v.Articulo = @Articulo)
+          AND (@Listado IS NULL OR v.Listado = @Listado)
+          AND (@FiltrarRfc = 0 OR EXISTS (SELECT 1 FROM @Rfcs r WHERE r.Rfc = v.Rfc))
+        OPTION (RECOMPILE);
+    END
+    ELSE
+    BEGIN
+        SELECT 
+            COUNT_BIG(DISTINCT h.Rfc) AS Rfcs,
+            COUNT_BIG(*)              AS Apariciones
+        FROM dbo.ContribuyenteHistorial h
+        WHERE (@Articulo IS NULL OR h.Articulo = @Articulo)
+          AND (@Listado IS NULL OR h.Listado = @Listado)
+          AND (@FiltrarRfc = 0 OR EXISTS (SELECT 1 FROM @Rfcs r WHERE r.Rfc = h.Rfc))
+        OPTION (RECOMPILE);
+    END;
+END;
+GO
+
+CREATE OR ALTER PROCEDURE dbo.DocumentoTecnico
+    @GeneracionId   bigint = 1
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT 
+        1 AS VersionId,
+        HojaOrdinal,
+        FilaOrdinal,
+        ColumnaOrdinal,
+        Hoja,
+        Valor
+    FROM dbo.DocumentoTecnico69
+    ORDER BY HojaOrdinal, FilaOrdinal, ColumnaOrdinal;
+END;
+GO
+
+CREATE OR ALTER PROCEDURE dbo.EstadoFuentes
+AS
+BEGIN
+    SET NOCOUNT ON;
+    EXEC dbo.ConsultarEstatusGeneral;
+END;
+GO
+
+CREATE OR ALTER PROCEDURE dbo.PublicarGeneracion
+    @Propietario    uniqueidentifier,
+    @Token          bigint
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT 1 AS GeneracionId;
 END;
 GO

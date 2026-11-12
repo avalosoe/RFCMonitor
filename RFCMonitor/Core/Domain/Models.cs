@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -8,20 +9,94 @@ public sealed record Listing(string Key, string Article, string Slug, string Nam
 {
     public string Url => "https://wu1agsprosta001.blob.core.windows.net/agsc-publicaciones/Datos_abiertos/" + RelativeUrl;
 }
+
 public sealed record OriginalCell(int Columna, string Nombre, string? Valor);
-public sealed record SourceRow(int Table, int Row, string Rfc, string Name, string Article, string Listing, string Status,
+
+/// <summary>
+/// Representa los datos normalizados y relacionales de un contribuyente en un artículo y listado fiscal.
+/// </summary>
+public sealed record ContribuyenteDatos(
+    string Rfc,
+    string RazonSocial,
+    string Articulo,
+    string Listado,
+    string Situacion,
+    DateOnly? FechaEfectiva,
+    string? TipoPersona = null,
+    string? EntidadFederativa = null,
+    decimal? Monto = null,
+    string? Ejercicio = null,
+    string? Periodo = null,
+    string? Motivo = null,
+    DateOnly? FechaCancelacion = null,
+    DateOnly? FechaAutorizacion = null,
+    string? Administracion = null,
+    string? NumeroOficioSAT = null,
+    DateOnly? FechaOficioSAT = null,
+    string? NumeroOficioDOF = null,
+    DateOnly? FechaOficioDOF = null,
+    string? PresuncionOficioSAT = null,
+    DateOnly? PresuncionFechaSAT = null,
+    string? PresuncionOficioDOF = null,
+    DateOnly? PresuncionFechaDOF = null,
+    string? DesvirtuadoOficioSAT = null,
+    DateOnly? DesvirtuadoFechaSAT = null,
+    string? DesvirtuadoOficioDOF = null,
+    DateOnly? DesvirtuadoFechaDOF = null,
+    string? DefinitivoOficioSAT = null,
+    DateOnly? DefinitivoFechaSAT = null,
+    string? DefinitivoOficioDOF = null,
+    DateOnly? DefinitivoFechaDOF = null,
+    string? SentenciaOficioSAT = null,
+    DateOnly? SentenciaFechaSAT = null,
+    string? SentenciaOficioDOF = null,
+    DateOnly? SentenciaFechaDOF = null
+)
+{
+    /// <summary>
+    /// Calcula un hash binario SHA-256 de 32 bytes de los campos representativos para delta ultrarrápido en BD.
+    /// </summary>
+    public byte[] ComputeHash()
+    {
+        var raw = string.Concat(
+            Rfc.Trim().ToUpperInvariant(), "|",
+            RazonSocial.Trim(), "|",
+            Articulo, "|",
+            Listado, "|",
+            Situacion.Trim(), "|",
+            FechaEfectiva?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "", "|",
+            Monto?.ToString("F2", CultureInfo.InvariantCulture) ?? "", "|",
+            Ejercicio ?? "", "|",
+            Periodo ?? "", "|",
+            NumeroOficioSAT ?? "", "|",
+            NumeroOficioDOF ?? "", "|",
+            PresuncionOficioSAT ?? "", "|",
+            DefinitivoOficioSAT ?? ""
+        );
+        return SHA256.HashData(Encoding.UTF8.GetBytes(raw));
+    }
+}
+
+public sealed record SourceRow(
+    int Table, int Row, string Rfc, string Name, string Article, string Listing, string Status,
     DateOnly? PublicationDate, string? Entity, Dictionary<string, object?> Typed, IReadOnlyList<OriginalCell> Original,
-    int HeaderRow = 0);
+    int HeaderRow = 0, ContribuyenteDatos? Datos = null);
+
 public sealed record SourceDocument(string SourceKey, string ExternalKey, string Origin, string Article, string Listing,
     string Url, string Hash, string EvidencePath, DateOnly? SourceDate, string DateScope, DateTimeOffset Detected,
     string ParserVersion, long? NoteCode = null, string? Title = null, string? Edition = null, string? Agency = null);
-/// <summary>Result of one immutable source-file import. Rows are the accepted rows exposed to the API.</summary>
-public sealed record ImportResult(long VersionId, bool Changed, long Rows, long ReadRows = 0, long RejectedRows = 0,
-    long CertifiedRows = 0, string? ReviewDetail = null);
+
+/// <summary>Resultado de la ingesta de un archivo o publicación.</summary>
+public sealed record ImportResult(
+    long VersionId, bool Changed, long Rows, long ReadRows = 0, long RejectedRows = 0,
+    long CertifiedRows = 0, string? ReviewDetail = null, int Nuevos = 0, int Modificados = 0, int SinCambios = 0);
+
 public sealed record QueryFilter(string? Article = null, string? Listing = null, bool IncludeHistory = false);
+
 public sealed record Appearance(long Id, long VersionId, string SourceId, string Origin, string Article, string Listing,
     string Rfc, string Name, string Status, DateOnly? PublicationDate, bool Historical, long? NoteCode, string Url,
     int Table, int Row, string DetailJson);
+
 public sealed record QueryHeader(long GenerationId, DateTimeOffset Generated, string SourcesJson, string CoverageJson);
 
 public static partial class Rfc

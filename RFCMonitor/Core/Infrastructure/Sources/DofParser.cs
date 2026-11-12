@@ -114,8 +114,19 @@ public static partial class DofParser
                 var statusColumn = headers is null ? -1 : Array.FindIndex(headers, h => TextKey.Normalize(h).Contains("SITUACION") || TextKey.Normalize(h) == "ESTATUS");
                 if (statusColumn >= 0 && statusColumn < cells.Length && !string.IsNullOrWhiteSpace(cells[statusColumn])) status = cells[statusColumn];
                 var original = cells.Select((cell, i) => new OriginalCell(i + 1, headers is not null && i < headers.Length ? headers[i] : "Columna " + (i + 1), cell)).ToArray();
+                var officeNum = Office().Match(context).Value;
+                var datos = new ContribuyenteDatos(
+                    Rfc: rfcVal,
+                    RazonSocial: name,
+                    Articulo: article,
+                    Listado: "publicaciones-dof",
+                    Situacion: status,
+                    FechaEfectiva: date,
+                    NumeroOficioDOF: string.IsNullOrWhiteSpace(officeNum) ? null : officeNum,
+                    FechaOficioDOF: date
+                );
                 tableRows.Add(new(ordinal, rowNumber, rfcVal, name, article, "publicaciones-dof", status, date, null,
-                    new() { ["numeroOficio"] = Office().Match(context).Value, ["evidenciaClasificacion"] = context, ["estadoOriginal"] = status }, original));
+                    new() { ["numeroOficio"] = officeNum, ["evidenciaClasificacion"] = context, ["estadoOriginal"] = status }, original, 0, datos));
             }
             // A table must be part of a publication, not a mere reference to legislation.
             var isList=relevant || (Regex.IsMatch(localContext,"listado|relaci[oó]n.*contribuyentes",RegexOptions.IgnoreCase)&&localArticle is not null);

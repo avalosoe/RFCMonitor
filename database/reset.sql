@@ -11,9 +11,16 @@ GO
 
 -- 1. Vistas
 DROP VIEW IF EXISTS dbo.Vigentes;
+DROP VIEW IF EXISTS dbo.VistaContribuyentesVigentes;
 GO
 
 -- 2. Procedimientos almacenados
+DROP PROCEDURE IF EXISTS dbo.AplicarCambiosSAT;
+DROP PROCEDURE IF EXISTS dbo.AplicarPublicacionDOF;
+DROP PROCEDURE IF EXISTS dbo.ConsultarContribuyentesVigentes;
+DROP PROCEDURE IF EXISTS dbo.ConsultarContribuyenteHistorial;
+DROP PROCEDURE IF EXISTS dbo.ConsultarEstatusGeneral;
+DROP PROCEDURE IF EXISTS dbo.ObtenerDocumentoTecnico69;
 DROP PROCEDURE IF EXISTS dbo.PublicarGeneracion;
 DROP PROCEDURE IF EXISTS dbo.EstadoFuentes;
 DROP PROCEDURE IF EXISTS dbo.DocumentoTecnico;
@@ -31,16 +38,32 @@ IF TYPE_ID(N'dbo.RfcInput') IS NOT NULL
 BEGIN
     DROP TYPE dbo.RfcInput;
 END;
+IF TYPE_ID(N'dbo.RFCList') IS NOT NULL
+BEGIN
+    DROP TYPE dbo.RFCList;
+END;
 GO
 
--- 5. Ruptura de dependencias circulares (FK de Publicacion hacia PublicacionVersion)
+-- 5. Ruptura de dependencias circulares (FK de Publicacion hacia PublicacionVersion si existiera)
 IF EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = N'FK_mrf_ActiveVersion')
 BEGIN
     ALTER TABLE dbo.Publicacion DROP CONSTRAINT FK_mrf_ActiveVersion;
 END;
 GO
 
--- 6. Tablas principales de la solución RFCMonitor (orden inverso a sus dependencias)
+-- 6. Tablas principales de la solución RFCMonitor (Estructura Relacional Limpia)
+DROP TABLE IF EXISTS dbo.ContribuyenteHistorial;
+DROP TABLE IF EXISTS dbo.ContribuyenteVigente;
+DROP TABLE IF EXISTS dbo.ControlFuenteSAT;
+DROP TABLE IF EXISTS dbo.ControlCoberturaDOF;
+DROP TABLE IF EXISTS dbo.NotaPendienteDOF;
+DROP TABLE IF EXISTS dbo.AdjuntoDOF;
+DROP TABLE IF EXISTS dbo.DocumentoTecnico69;
+DROP TABLE IF EXISTS dbo.BitacoraEjecucion;
+DROP TABLE IF EXISTS dbo.BloqueoServicio;
+GO
+
+-- 7. Tablas de versiones intermedias y estructuras previas con JSON
 DROP TABLE IF EXISTS dbo.GeneracionActiva;
 DROP TABLE IF EXISTS dbo.GeneracionVersion;
 DROP TABLE IF EXISTS dbo.Generacion;
@@ -61,7 +84,7 @@ DROP TABLE IF EXISTS dbo.Adjunto;
 DROP TABLE IF EXISTS dbo.Lease;
 GO
 
--- 7. Tablas legadas y de versiones históricas (EdosSatScraper / RfcStatusApi)
+-- 8. Tablas legadas y de versiones históricas (EdosSatScraper / RfcStatusApi)
 DROP TABLE IF EXISTS dbo.CampoFuente;
 DROP TABLE IF EXISTS dbo.MigracionEsquema;
 DROP TABLE IF EXISTS dbo.Detalle69;
@@ -87,9 +110,18 @@ DROP TABLE IF EXISTS dbo.NoLocalizadosDetalle;
 DROP TABLE IF EXISTS dbo.SentenciasDetalle;
 DROP TABLE IF EXISTS dbo.CsdSinEfectosDetalle;
 DROP TABLE IF EXISTS dbo.EntesOmisosDetalle;
+DROP TABLE IF EXISTS dbo.TBL_edos_d;
+DROP TABLE IF EXISTS dbo.TBL_edos_e;
+DROP TABLE IF EXISTS dbo.TBL_Listado69NL_d;
+DROP TABLE IF EXISTS dbo.TBL_Listado69NL;
+DROP TABLE IF EXISTS dbo.TBL_Listado69BBis_d;
+DROP TABLE IF EXISTS dbo.TBL_Listado69BBis;
+DROP TABLE IF EXISTS dbo.DOF_Contribuyente;
+DROP TABLE IF EXISTS dbo.DOF_EstatusRFC;
+DROP TABLE IF EXISTS dbo.DOF_Publicacion;
 GO
 
--- 8. Roles y permisos de base de datos
+-- 9. Roles y permisos de base de datos
 DECLARE @sql nvarchar(max) = N'';
 SELECT @sql = STRING_AGG(N'ALTER ROLE ' + QUOTENAME(r.name) + N' DROP MEMBER ' + QUOTENAME(m.name) + N';', CHAR(10))
 FROM sys.database_role_members rm
