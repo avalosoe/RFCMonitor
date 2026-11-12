@@ -68,6 +68,10 @@ GO
 -- ----------------------------------------------------------------------------
 -- 3. Tabla Principal de Contribuyentes Vigentes (Estado Actual Relacional)
 -- ----------------------------------------------------------------------------
+-- Contiene las publicaciones vigentes de contribuyentes. Un contribuyente
+-- puede poseer múltiples registros en un mismo listado (p. ej. diversos
+-- créditos cancelados, multas reducidas o condonaciones con distintos montos/fechas).
+-- ----------------------------------------------------------------------------
 
 IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'ContribuyenteVigente' AND schema_id = SCHEMA_ID('dbo'))
 BEGIN
@@ -117,10 +121,15 @@ BEGIN
 
         -- Control de Delta y Comparativa
         HashFila                    binary(32) NOT NULL,
-        UltimaDescarga              datetime2(3) NOT NULL DEFAULT SYSDATETIME(),
-
-        CONSTRAINT UQ_ContribuyenteVigente_RfcArticuloListado UNIQUE (Rfc, Articulo, Listado)
+        UltimaDescarga              datetime2(3) NOT NULL DEFAULT SYSDATETIME()
     );
+END;
+GO
+
+-- Asegurar eliminación de restricción UNIQUE si fue creada previamente
+IF EXISTS (SELECT 1 FROM sys.key_constraints WHERE name = 'UQ_ContribuyenteVigente_RfcArticuloListado')
+BEGIN
+    ALTER TABLE dbo.ContribuyenteVigente DROP CONSTRAINT UQ_ContribuyenteVigente_RfcArticuloListado;
 END;
 GO
 
@@ -138,6 +147,13 @@ BEGIN
     CREATE INDEX IX_ContribuyenteVigente_ArticuloListado 
     ON dbo.ContribuyenteVigente(Articulo, Listado)
     INCLUDE (Rfc, Situacion, FechaEfectiva);
+END;
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ContribuyenteVigente_ArticuloListadoHash' AND object_id = OBJECT_ID('dbo.ContribuyenteVigente'))
+BEGIN
+    CREATE INDEX IX_ContribuyenteVigente_ArticuloListadoHash 
+    ON dbo.ContribuyenteVigente(Articulo, Listado, HashFila);
 END;
 GO
 
@@ -300,10 +316,11 @@ GO
 -- ----------------------------------------------------------------------------
 -- Este procedimiento procesa la tabla de staging (#ContribuyenteStaging) creada
 -- durante el bulk copy del archivo descargado del SAT, comparando el HashFila.
--- - Registros Nuevos: Se insertan en ContribuyenteVigente y ContribuyenteHistorial ('Alta Inicial').
--- - Registros Modificados: Si la fecha efectiva o fecha portal es mayor o igual, se actualiza ContribuyenteVigente
---   y se agrega un evento en ContribuyenteHistorial ('Cambio Situacion').
+-- Soporta múltiples registros por RFC (p. ej. cancelaciones con diferentes montos/fechas)
+-- sin generar violaciones de clave y preservando toda la información sin pérdidas.
 -- - Registros Idénticos: Solo actualizan la marca UltimaDescarga. CERO filas en Historial.
+-- - Registros Nuevos: Se insertan en ContribuyenteVigente y ContribuyenteHistorial ('Alta Inicial' o 'Cambio Situacion').
+-- - Registros Retirados: Se eliminan de Vigente si ya no vienen en la fuente oficial.
 -- ----------------------------------------------------------------------------
 
 CREATE OR ALTER PROCEDURE dbo.AplicarCambiosSAT
@@ -322,7 +339,6 @@ BEGIN
     SET NOCOUNT ON;
     SET XACT_ABORT ON;
 
-    -- Validar que la tabla de staging existe
     IF OBJECT_ID('tempdb..#ContribuyenteStaging') IS NULL
     BEGIN
         THROW 50001, 'La tabla temporal #ContribuyenteStaging no fue encontrada.', 1;
@@ -330,7 +346,27 @@ BEGIN
 
     DECLARE @FechaHoraLocal datetime2(3) = SYSDATETIME();
 
-    -- 1. Insertar Contribuyentes Nuevos en ContribuyenteVigente
+    -- 1. Actualizar marca UltimaDescarga de registros existentes que coinciden exactamente en contenido (HashFila)
+    UPDATE v
+    SET v.UltimaDescarga = @FechaHoraLocal
+    FROM dbo.ContribuyenteVigente v
+    WHERE v.Articulo = @Articulo
+      AND v.Listado = @Listado
+      AND EXISTS (
+          SELECT 1 
+          FROM #ContribuyenteStaging s 
+          WHERE s.HashFila = v.HashFila
+      );
+
+    SET @TotalSinCambios = @@ROWCOUNT;
+
+    -- 2. Insertar en ContribuyenteVigente los registros de staging cuyo HashFila no exista actualmente en vigentes.
+    -- Se deduplica en caso de que el archivo CSV contenga líneas 100% idénticas repetidas en el origen.
+    WITH StagingDeduplicada AS (
+        SELECT *,
+               ROW_NUMBER() OVER (PARTITION BY HashFila ORDER BY (SELECT NULL)) AS rn
+        FROM #ContribuyenteStaging
+    )
     INSERT INTO dbo.ContribuyenteVigente (
         Rfc, RazonSocial, Articulo, Listado, Situacion, FechaEfectiva,
         OrigenUltimaModificacion, FechaModificacion, TipoPersona, EntidadFederativa,
@@ -352,16 +388,17 @@ BEGIN
         s.DefinitivoOficioSAT, s.DefinitivoFechaSAT, s.DefinitivoOficioDOF, s.DefinitivoFechaDOF,
         s.SentenciaOficioSAT, s.SentenciaFechaSAT, s.SentenciaOficioDOF, s.SentenciaFechaDOF,
         s.HashFila, @FechaHoraLocal
-    FROM #ContribuyenteStaging s
-    WHERE NOT EXISTS (
-        SELECT 1 
-        FROM dbo.ContribuyenteVigente v 
-        WHERE v.Rfc = s.Rfc AND v.Articulo = @Articulo AND v.Listado = @Listado
-    );
+    FROM StagingDeduplicada s
+    WHERE s.rn = 1
+      AND NOT EXISTS (
+          SELECT 1 
+          FROM dbo.ContribuyenteVigente v 
+          WHERE v.Articulo = @Articulo AND v.Listado = @Listado AND v.HashFila = s.HashFila
+      );
 
     SET @TotalNuevos = @@ROWCOUNT;
 
-    -- Registrar evento 'Alta Inicial' en el Historial para los nuevos
+    -- 3. Registrar eventos en el Historial para los registros nuevos agregados
     IF @TotalNuevos > 0
     BEGIN
         INSERT INTO dbo.ContribuyenteHistorial (
@@ -371,101 +408,36 @@ BEGIN
             EntidadFederativa, Motivo, HashFila
         )
         SELECT 
-            s.Rfc, s.RazonSocial, @Articulo, @Listado, s.Situacion, s.FechaEfectiva,
-            'Alta Inicial', 'SAT', @FechaHoraLocal, NULL, @UrlPortal,
-            s.NumeroOficioSAT, s.FechaOficioSAT, s.NumeroOficioDOF, s.FechaOficioDOF,
-            s.EntidadFederativa, s.Motivo, s.HashFila
-        FROM #ContribuyenteStaging s
-        JOIN dbo.ContribuyenteVigente v 
-          ON v.Rfc = s.Rfc AND v.Articulo = @Articulo AND v.Listado = @Listado
-        WHERE v.FechaModificacion = @FechaHoraLocal AND v.OrigenUltimaModificacion = 'SAT';
+            v.Rfc, v.RazonSocial, v.Articulo, v.Listado, v.Situacion, v.FechaEfectiva,
+            CASE 
+                WHEN EXISTS (
+                    SELECT 1 
+                    FROM dbo.ContribuyenteHistorial h 
+                    WHERE h.Rfc = v.Rfc AND h.Articulo = v.Articulo AND h.Listado = v.Listado
+                ) THEN 'Cambio Situacion'
+                ELSE 'Alta Inicial'
+            END,
+            'SAT', @FechaHoraLocal, NULL, @UrlPortal,
+            v.NumeroOficioSAT, v.FechaOficioSAT, v.NumeroOficioDOF, v.FechaOficioDOF,
+            v.EntidadFederativa, v.Motivo, v.HashFila
+        FROM dbo.ContribuyenteVigente v
+        WHERE v.Articulo = @Articulo 
+          AND v.Listado = @Listado 
+          AND v.FechaModificacion = @FechaHoraLocal;
     END;
 
-    -- 2. Detectar y Aplicar Registros Modificados (mismo RFC pero diferente HashFila)
-    -- Si la fecha efectiva del SAT es más reciente o igual a la actual, se actualiza el estatus vigente.
-    UPDATE v
-    SET 
-        v.RazonSocial = s.RazonSocial,
-        v.Situacion = s.Situacion,
-        v.FechaEfectiva = COALESCE(s.FechaEfectiva, v.FechaEfectiva),
-        v.OrigenUltimaModificacion = CASE 
-            WHEN s.FechaEfectiva >= v.FechaEfectiva OR v.FechaEfectiva IS NULL OR v.OrigenUltimaModificacion = 'SAT' 
-            THEN 'SAT' ELSE v.OrigenUltimaModificacion END,
-        v.FechaModificacion = @FechaHoraLocal,
-        v.TipoPersona = s.TipoPersona,
-        v.EntidadFederativa = s.EntidadFederativa,
-        v.Monto = s.Monto,
-        v.Ejercicio = s.Ejercicio,
-        v.Periodo = s.Periodo,
-        v.Motivo = s.Motivo,
-        v.FechaCancelacion = s.FechaCancelacion,
-        v.FechaAutorizacion = s.FechaAutorizacion,
-        v.Administracion = s.Administracion,
-        v.NumeroOficioSAT = s.NumeroOficioSAT,
-        v.FechaOficioSAT = s.FechaOficioSAT,
-        v.NumeroOficioDOF = s.NumeroOficioDOF,
-        v.FechaOficioDOF = s.FechaOficioDOF,
-        v.PresuncionOficioSAT = s.PresuncionOficioSAT,
-        v.PresuncionFechaSAT = s.PresuncionFechaSAT,
-        v.PresuncionOficioDOF = s.PresuncionOficioDOF,
-        v.PresuncionFechaDOF = s.PresuncionFechaDOF,
-        v.DesvirtuadoOficioSAT = s.DesvirtuadoOficioSAT,
-        v.DesvirtuadoFechaSAT = s.DesvirtuadoFechaSAT,
-        v.DesvirtuadoOficioDOF = s.DesvirtuadoOficioDOF,
-        v.DesvirtuadoFechaDOF = s.DesvirtuadoFechaDOF,
-        v.DefinitivoOficioSAT = s.DefinitivoOficioSAT,
-        v.DefinitivoFechaSAT = s.DefinitivoFechaSAT,
-        v.DefinitivoOficioDOF = s.DefinitivoOficioDOF,
-        v.DefinitivoFechaDOF = s.DefinitivoFechaDOF,
-        v.SentenciaOficioSAT = s.SentenciaOficioSAT,
-        v.SentenciaFechaSAT = s.SentenciaFechaSAT,
-        v.SentenciaOficioDOF = s.SentenciaOficioDOF,
-        v.SentenciaFechaDOF = s.SentenciaFechaDOF,
-        v.HashFila = s.HashFila,
-        v.UltimaDescarga = @FechaHoraLocal
-    FROM dbo.ContribuyenteVigente v
-    JOIN #ContribuyenteStaging s 
-      ON s.Rfc = v.Rfc AND v.Articulo = @Articulo AND v.Listado = @Listado
-    WHERE v.HashFila <> s.HashFila;
+    -- 4. Retirar de Vigente los registros de esta fuente que ya no están presentes en la descarga oficial
+    DELETE FROM dbo.ContribuyenteVigente
+    WHERE Articulo = @Articulo AND Listado = @Listado AND UltimaDescarga < @FechaHoraLocal;
 
-    SET @TotalModificados = @@ROWCOUNT;
+    SET @TotalModificados = 0;
 
-    -- Registrar evento 'Cambio Situacion' en el Historial para los modificados
-    IF @TotalModificados > 0
-    BEGIN
-        INSERT INTO dbo.ContribuyenteHistorial (
-            Rfc, RazonSocial, Articulo, Listado, Situacion, FechaEfectiva,
-            TipoEvento, Origen, FechaRegistro, CodNotaDOF, UrlOrigen,
-            NumeroOficioSAT, FechaOficioSAT, NumeroOficioDOF, FechaOficioDOF,
-            EntidadFederativa, Motivo, HashFila
-        )
-        SELECT 
-            s.Rfc, s.RazonSocial, @Articulo, @Listado, s.Situacion, s.FechaEfectiva,
-            'Cambio Situacion', 'SAT', @FechaHoraLocal, NULL, @UrlPortal,
-            s.NumeroOficioSAT, s.FechaOficioSAT, s.NumeroOficioDOF, s.FechaOficioDOF,
-            s.EntidadFederativa, s.Motivo, s.HashFila
-        FROM #ContribuyenteStaging s
-        JOIN dbo.ContribuyenteVigente v 
-          ON v.Rfc = s.Rfc AND v.Articulo = @Articulo AND v.Listado = @Listado
-        WHERE v.FechaModificacion = @FechaHoraLocal AND v.HashFila = s.HashFila AND @TotalModificados > 0;
-    END;
-
-    -- 3. Actualizar marca de tiempo para registros Sin Cambios (CERO filas en Historial)
-    UPDATE v
-    SET v.UltimaDescarga = @FechaHoraLocal
-    FROM dbo.ContribuyenteVigente v
-    JOIN #ContribuyenteStaging s 
-      ON s.Rfc = v.Rfc AND v.Articulo = @Articulo AND v.Listado = @Listado
-    WHERE v.HashFila = s.HashFila AND v.UltimaDescarga < @FechaHoraLocal;
-
-    SET @TotalSinCambios = @@ROWCOUNT;
-
-    -- 4. Contar el total vigente actual de esta fuente
+    -- 5. Contar el total vigente actual de esta fuente
     SELECT @TotalVigentes = COUNT(*) 
     FROM dbo.ContribuyenteVigente 
     WHERE Articulo = @Articulo AND Listado = @Listado;
 
-    -- 5. Actualizar el estado de ControlFuenteSAT
+    -- 6. Actualizar el estado de ControlFuenteSAT
     UPDATE dbo.ControlFuenteSAT
     SET 
         FechaPublicacionPortal  = COALESCE(@FechaPortal, FechaPublicacionPortal),
@@ -476,7 +448,7 @@ BEGIN
         TotalNuevos             = @TotalNuevos,
         TotalModificados        = @TotalModificados,
         TotalSinCambios         = @TotalSinCambios,
-        Resultado               = CASE WHEN @TotalNuevos > 0 OR @TotalModificados > 0 THEN 'cambios' ELSE 'sin-cambios' END,
+        Resultado               = CASE WHEN @TotalNuevos > 0 THEN 'cambios' ELSE 'sin-cambios' END,
         UltimoError             = NULL
     WHERE FuenteClave = @FuenteClave;
 
@@ -491,7 +463,7 @@ BEGIN
             @FuenteClave, @Articulo, @Listado, @FuenteClave, @UrlPortal, 0, 1,
             @FechaPortal, @HashArchivo, @FechaHoraLocal, @FechaHoraLocal,
             @TotalVigentes, @TotalNuevos, @TotalModificados, @TotalSinCambios,
-            CASE WHEN @TotalNuevos > 0 OR @TotalModificados > 0 THEN 'cambios' ELSE 'sin-cambios' END
+            CASE WHEN @TotalNuevos > 0 THEN 'cambios' ELSE 'sin-cambios' END
         );
     END;
 END;
@@ -540,7 +512,6 @@ BEGIN
     );
 
     -- 2. Evaluar y Actualizar/Insertar en ContribuyenteVigente
-    -- Si no existe en vigentes para este artículo, se inserta
     IF NOT EXISTS (SELECT 1 FROM dbo.ContribuyenteVigente WHERE Rfc = @Rfc AND Articulo = @Articulo AND Listado = @Listado)
     BEGIN
         INSERT INTO dbo.ContribuyenteVigente (

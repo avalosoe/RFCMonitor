@@ -315,7 +315,7 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                 if (status.Length > 2000) status = status[..2000];
 
                 var d = row.Datos;
-                var hash = d?.ComputeHash() ?? ComputeHashFallback(rfc, name, row.Article, row.Listing, status, row.PublicationDate);
+                var hash = d?.ComputeHash() ?? ComputeHashFallback(rfc, name, row.Article, row.Listing, status, row.PublicationDate, d?.Monto, d?.Motivo);
 
                 stagingBatch.Rows.Add(
                     rfc,
@@ -400,9 +400,9 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
         }
     }
 
-    private static byte[] ComputeHashFallback(string rfc, string name, string article, string listing, string status, DateOnly? date)
+    private static byte[] ComputeHashFallback(string rfc, string name, string article, string listing, string status, DateOnly? date, decimal? monto = null, string? motivo = null)
     {
-        var raw = $"{rfc.Trim().ToUpperInvariant()}|{name.Trim()}|{article}|{listing}|{status.Trim()}|{date:yyyy-MM-dd}";
+        var raw = $"{rfc.Trim().ToUpperInvariant()}|{name.Trim()}|{article}|{listing}|{status.Trim()}|{date:yyyy-MM-dd}|{monto?.ToString("F2", CultureInfo.InvariantCulture)}|{motivo}";
         return SHA256.HashData(Encoding.UTF8.GetBytes(raw));
     }
 
