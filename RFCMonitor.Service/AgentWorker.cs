@@ -70,6 +70,29 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
             catch (Exception ex) { error = SafeError.Describe(ex); logger.LogError(ex, "No se pudo cargar la configuración del Worker."); }
             Persist();
         }
+
+        // Notificación de inicio de servicio
+        if (options?.Email.Enabled == true && options.Email.NotifyServiceLifecycle)
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    using var startCts = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+                    var fuentesDesc = $"SAT: {(options.SatEnabled ? "Habilitado" : "Deshabilitado")}, DOF: {(options.DofEnabled ? "Habilitado" : "Deshabilitado")}";
+                    var proxDesc = state.Next is { } nx ? nx.ToString("yyyy-MM-dd HH:mm:ss") : "No programada";
+                    await EmailOutbox.SendServiceLifecycleAsync(options.Email, "Iniciado",
+                        $"El servicio en segundo plano MonitorRFC.Service ha iniciado correctamente en el equipo {Environment.MachineName}. Ingesta: {fuentesDesc}. Próxima ejecución: {proxDesc}.",
+                        startCts.Token);
+                    logger.LogInformation("Notificación de servicio iniciado enviada por correo.");
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "No se pudo enviar la notificación de servicio iniciado.");
+                }
+            });
+        }
+
         while (!stoppingToken.IsCancellationRequested)
         {
             AgentOptions? runOptions = null; string trigger = "manual";
@@ -165,8 +188,11 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
             AgentConfiguration.AtomicWrite(history, JsonSerializer.Serialize(report, AgentConfiguration.Json));
             try { await repo.SaveExecutionAsync(report, finish.Token); }
             catch (Exception ex) { logger.LogWarning(ex, "No se pudo guardar el resumen en SQL; se conservó localmente en {HistoryPath}.", history); }
-            try { await outbox.EnqueueAsync(report, finish.Token); }
-            catch (Exception ex) { logger.LogWarning(ex, "No se pudo encolar el correo de resumen."); }
+            if (report.Fuentes.Count > 0 || report.Resultado == "fallida")
+            {
+                try { await outbox.EnqueueAsync(report, finish.Token); }
+                catch (Exception ex) { logger.LogWarning(ex, "No se pudo encolar el correo de resumen."); }
+            }
             lock (gate)
             {
                 state.Last = report; state.Running = false;
@@ -176,6 +202,30 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
             logger.LogInformation("Resultado {Resultado}; fuentes {Fuentes}; registros {Registros}", report.Resultado, report.Fuentes.Count, report.Fuentes.Sum(f => f.Registros));
         }
     }
+
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        logger.LogInformation("Deteniendo servicio MonitorRFC.Service...");
+        try
+        {
+            var opt = options ?? configuration.Load();
+            if (opt?.Email.Enabled == true && opt.Email.NotifyServiceLifecycle)
+            {
+                using var stopCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                await EmailOutbox.SendServiceLifecycleAsync(opt.Email, "Detenido",
+                    $"El servicio en segundo plano MonitorRFC.Service en el equipo {Environment.MachineName} ha sido detenido. El procesamiento programado queda suspendido.",
+                    stopCts.Token);
+                logger.LogInformation("Notificación de servicio detenido enviada por correo.");
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "No se pudo enviar la notificación de servicio detenido.");
+        }
+
+        await base.StopAsync(cancellationToken);
+    }
+
     public static string Outcome(IReadOnlyList<SourceResult> rows) => rows.Any(r => r.Resultado is "fallida" or "requiere-revision")
         ? rows.Any(r => r.Resultado is "cambios" or "sin-cambios") ? "parcial" : "fallida"
         : rows.Any(r => r.Resultado == "cambios") ? "cambios" : "sin-cambios";
