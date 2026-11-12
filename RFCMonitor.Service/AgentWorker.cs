@@ -63,7 +63,9 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
                 options = configuration.Load();
                 AgentConfiguration.SecureDirectory(options.DataDirectory);
                 state.Next ??= ScheduleCalculator.Next(options.Schedule, DateTimeOffset.Now);
-                if (options.Schedule.RunOnStartup) { state.Queued = true; state.Trigger = "arranque"; }
+                // Siempre encolar la ejecución al arrancar el servicio para evaluar inmediatamente y notificar el resultado
+                state.Queued = true;
+                state.Trigger = "arranque";
                 logger.LogInformation("Configuración cargada. SAT={SatEnabled}; DOF={DofEnabled}; programación={Mode}; próxima={NextRun}; datos={DataDirectory}",
                     options.SatEnabled, options.DofEnabled, options.Schedule.Mode, state.Next, options.DataDirectory);
             }
@@ -82,7 +84,7 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
                     var fuentesDesc = $"SAT: {(options.SatEnabled ? "Habilitado" : "Deshabilitado")}, DOF: {(options.DofEnabled ? "Habilitado" : "Deshabilitado")}";
                     var proxDesc = state.Next is { } nx ? nx.ToString("yyyy-MM-dd HH:mm:ss") : "No programada";
                     await EmailOutbox.SendServiceLifecycleAsync(options.Email, "Iniciado",
-                        $"El servicio en segundo plano MonitorRFC.Service ha iniciado correctamente en el equipo {Environment.MachineName}. Ingesta: {fuentesDesc}. Próxima ejecución: {proxDesc}.",
+                        $"El servicio en segundo plano MonitorRFC.Service ha iniciado correctamente en el equipo {Environment.MachineName}. Ingesta: {fuentesDesc}. Próxima ejecución: {proxDesc}. Se inicia inmediatamente el ciclo de evaluación y recolección.",
                         startCts.Token);
                     logger.LogInformation("Notificación de servicio iniciado enviada por correo.");
                 }

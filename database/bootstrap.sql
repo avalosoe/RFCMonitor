@@ -973,7 +973,7 @@ BEGIN
         ColumnaOrdinal,
         Hoja,
         Valor
-    FROM dbo.DocumentoTecnico69
+    FROM dbo.DocumentoTecnico69 WITH (NOLOCK)
     ORDER BY HojaOrdinal, FilaOrdinal, ColumnaOrdinal;
 END;
 GO

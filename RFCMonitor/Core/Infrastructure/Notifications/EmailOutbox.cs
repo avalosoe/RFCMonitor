@@ -27,7 +27,9 @@ public sealed class EmailOutbox(AgentConfiguration configuration) : IExecutionNo
     public Task EnqueueAsync(ExecutionReport report, CancellationToken ct)
     {
         var o = configuration.Load();
-        if (!o.Email.Enabled || !o.Email.NotifyResults.Contains(report.Resultado)) return Task.CompletedTask;
+        if (!o.Email.Enabled) return Task.CompletedTask;
+        var isManualOrStartup = report.Disparador is "arranque" or "manual";
+        if (!isManualOrStartup && !o.Email.NotifyResults.Contains(report.Resultado)) return Task.CompletedTask;
         if (report.Fuentes.Count == 0 && report.Resultado != "fallida") return Task.CompletedTask;
 
         var dir = DirectoryPath(o);

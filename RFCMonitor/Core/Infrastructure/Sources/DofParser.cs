@@ -40,7 +40,7 @@ public static partial class DofParser
     {
         var document=new HtmlDocument(); document.LoadHtml(html);
         var titleArticle=Article(title);
-        var listTitle=Regex.IsMatch(title,"listado|nombre.*clave|relaci[oó]n.*contribuyentes",RegexOptions.IgnoreCase);
+        var listTitle=Regex.IsMatch(title,"listado|nombre.*clave|relaci[oó]n.*contribuyentes|oficio|notificaci|anexo",RegexOptions.IgnoreCase);
         var relevant=titleArticle is not null && listTitle;
         var result=new List<SourceRow>();
         var review=false;
@@ -58,7 +58,7 @@ public static partial class DofParser
             }
             var localContext=string.Join(" ",contextParts);
             var localArticle=Article(localContext);
-            var article=(localArticle is not null && Regex.IsMatch(localContext,"listado|relaci[oó]n.*contribuyentes",RegexOptions.IgnoreCase))?localArticle:titleArticle;
+            var article=localArticle ?? titleArticle ?? Article(title + " " + localContext);
             if(article is null) continue;
             var grid=Grid(table);
             string[]? headers=null;
@@ -129,13 +129,15 @@ public static partial class DofParser
                     new() { ["numeroOficio"] = officeNum, ["evidenciaClasificacion"] = context, ["estadoOriginal"] = status }, original, 0, datos));
             }
             // A table must be part of a publication, not a mere reference to legislation.
-            var isList=relevant || (Regex.IsMatch(localContext,"listado|relaci[oó]n.*contribuyentes",RegexOptions.IgnoreCase)&&localArticle is not null);
-            if(tableRows.Count>0&&isList) {result.AddRange(tableRows);relevant=true;}
+            var isList = relevant 
+                || (Regex.IsMatch(localContext, "listado|relaci[oó]n.*contribuyentes|oficio|notificaci[oó]n|acuerdo", RegexOptions.IgnoreCase) && article is not null)
+                || (article is not null && tableRows.Count > 0);
+            if (tableRows.Count > 0 && (isList || relevant)) { result.AddRange(tableRows); relevant = true; }
         }
         var attachments=(document.DocumentNode.SelectNodes("//a[@href]")??new HtmlNodeCollection(document.DocumentNode))
             .Select(a=>a.GetAttributeValue("href","")).Where(u=>Regex.IsMatch(u,@"\.(pdf|png|jpg|jpeg)(\?|$)",RegexOptions.IgnoreCase)).Distinct().ToArray();
         if(relevant&&result.Count==0) review=true;
-        return new(result,relevant,review,review?"Publicación relevante sin extracción completa; revisar tablas/adjuntos.":null,attachments);
+        return new(result, relevant || result.Count > 0, review, review ? "Publicación relevante sin extracción completa; revisar tablas/adjuntos." : null, attachments);
     }
     internal static IEnumerable<string[]> Grid(HtmlNode table)
     {

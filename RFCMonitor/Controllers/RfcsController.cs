@@ -144,6 +144,9 @@ public sealed class RfcsController(IRfcQueryService queries, SqlRepository repos
             return Problem(statusCode: 400, title: $"Artículo '{artStr}' inválido o no reconocido.");
 
         var options = new Contracts.AgentOptions();
+        try { Directory.CreateDirectory(options.DataDirectory); }
+        catch { options.DataDirectory = Path.Combine(Path.GetTempPath(), "MonitorRFC"); Directory.CreateDirectory(options.DataDirectory); }
+
         var response = await repository.SincronizarDofPeriodoAsync(inicioDate, finDate, artStr, downloader, options, ct);
         return Ok(response);
     }

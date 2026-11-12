@@ -395,13 +395,25 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                     d?.SentenciaFechaDOF is { } sfd ? sfd.ToDateTime(TimeOnly.MinValue) : DBNull.Value,
                     hash
                 );
+
+                if (stagingBatch.Rows.Count >= 25000)
+                {
+                    logger?.LogInformation("Enviando lote de {Count:N0} filas a #ContribuyenteStaging (total procesado: {Total:N0})...", stagingBatch.Rows.Count, totalRead);
+                    await FlushAsync(c, transaction, stagingBatch, "#ContribuyenteStaging", ct, logger);
+                }
             }
 
             if (totalRead == 0) throw new InvalidDataException("El archivo del SAT no contiene filas legibles.");
 
-            logger?.LogInformation("Iniciando volcado masivo en #ContribuyenteStaging ({Count:N0} filas)...", stagingBatch.Rows.Count);
-            await FlushAsync(c, transaction, stagingBatch, "#ContribuyenteStaging", ct, logger);
-            logger?.LogInformation("Volcado completado. Ejecutando comparativa delta (dbo.AplicarCambiosSAT)...");
+            if (stagingBatch.Rows.Count > 0)
+            {
+                logger?.LogInformation("Enviando lote remanente de {Count:N0} filas a #ContribuyenteStaging...", stagingBatch.Rows.Count);
+                await FlushAsync(c, transaction, stagingBatch, "#ContribuyenteStaging", ct, logger);
+            }
+
+            logger?.LogInformation("Volcado a #ContribuyenteStaging completado ({Total:N0} filas). Creando índice y ejecutando comparativa delta (dbo.AplicarCambiosSAT)...", totalRead);
+            using var idxStaging = Command(c, "CREATE NONCLUSTERED INDEX IX_ContribuyenteStaging_Hash ON #ContribuyenteStaging (HashFila);", transaction);
+            await idxStaging.ExecuteNonQueryAsync(ct);
 
             using var applyChanges = Command(c, "dbo.AplicarCambiosSAT", transaction);
             applyChanges.CommandType = CommandType.StoredProcedure;
@@ -504,7 +516,7 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
     {
         if (batch.Rows.Count == 0) return;
         var totalRows = batch.Rows.Count;
-        using var bulk = new SqlBulkCopy(c, SqlBulkCopyOptions.TableLock, tx)
+        using var bulk = new SqlBulkCopy(c, SqlBulkCopyOptions.Default, tx)
         {
             DestinationTableName = table,
             BatchSize = 25000,
@@ -1160,7 +1172,7 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
             }
 
             using var response = JsonDocument.Parse(content);
-            if (!response.RootElement.TryGetProperty("CodError", out var code) || code.GetInt32() != 0) continue;
+            if (DofCollector.String(response.RootElement, "messageCode") != "200") continue;
 
             var seenNotes = new HashSet<long>();
             foreach (var group in new[] { "NotasMatutinas", "NotasVespertinas", "NotasExtraordinarias" })
@@ -1168,26 +1180,33 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                 if (!response.RootElement.TryGetProperty(group, out var notes) || notes.ValueKind != JsonValueKind.Array) continue;
                 foreach (var note in notes.EnumerateArray())
                 {
-                    var agency = note.TryGetProperty("codOrgaDos", out var ag) ? ag.GetString() ?? "" : "";
-                    if (!TextKey.Normalize(agency).Contains("HACIENDA")) continue;
-                    if (!note.TryGetProperty("codNota", out var cn) || !long.TryParse(cn.GetString(), out var codNota) || !seenNotes.Add(codNota)) continue;
+                    var agency = DofCollector.String(note, "codOrgaDos");
+                    var noteTitle = DofCollector.String(note, "titulo");
+                    var normAgency = TextKey.Normalize(agency);
+                    var normTitle = TextKey.Normalize(noteTitle);
+                    if (!normAgency.Contains("HACIENDA") && !normAgency.Contains("SAT") && !normTitle.Contains("69") && !normTitle.Contains("CONTRIBUYENTE")) continue;
+                    if (!long.TryParse(DofCollector.String(note, "codNota"), out var codNota) || !seenNotes.Add(codNota)) continue;
 
                     try
                     {
                         var download = await downloader.FetchAsync($"{baseUrl}/notas/nota/{codNota}", options, ct);
                         using var detail = JsonDocument.Parse(await File.ReadAllTextAsync(download.Path, ct));
-                        if (!detail.RootElement.TryGetProperty("Nota", out var val)) continue;
+                        if (DofCollector.String(detail.RootElement, "messageCode") != "200" || !detail.RootElement.TryGetProperty("Nota", out var val)) continue;
 
-                        var title = val.TryGetProperty("titulo", out var t) ? t.GetString() ?? "" : "";
-                        var html = val.TryGetProperty("cadenaContenido", out var h) ? h.GetString() ?? "" : "";
-                        var dateText = val.TryGetProperty("fecha", out var d) ? d.GetString() ?? "" : "";
+                        var title = DofCollector.String(val, "titulo");
+                        var html = DofCollector.String(val, "cadenaContenido");
+                        var dateText = DofCollector.String(val, "fecha");
                         if (!DateOnly.TryParseExact(dateText, "dd-MM-yyyy", CultureInfo.InvariantCulture, DateTimeStyles.None, out var pubDate)) continue;
 
                         var parsed = DofParser.Parse(title, html, pubDate);
-                        if (!parsed.Relevant || parsed.Rows.Count == 0) continue;
+                        if (parsed.Rows.Count == 0) continue;
+
+                        var normalizarFiltro = string.IsNullOrWhiteSpace(articuloFiltro) || articuloFiltro.Equals("todos", StringComparison.OrdinalIgnoreCase)
+                            ? null
+                            : articuloFiltro.Trim().ToLowerInvariant();
 
                         var filasFiltradas = parsed.Rows
-                            .Where(r => string.IsNullOrEmpty(articuloFiltro) || string.Equals(r.Article, articuloFiltro, StringComparison.OrdinalIgnoreCase))
+                            .Where(r => normalizarFiltro is null || string.Equals(r.Article, normalizarFiltro, StringComparison.OrdinalIgnoreCase))
                             .ToList();
 
                         if (filasFiltradas.Count == 0) continue;
@@ -1195,7 +1214,8 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                         notasProcesadas++;
                         detalleNotas.Add(new DofSyncDetalleNota(codNota, pubDate, title, filasFiltradas.Count));
 
-                        var edicion = val.TryGetProperty("codEdicion", out var ed) ? ed.GetString() : null;
+                        var edicion = DofCollector.String(val, "codEdicion");
+                        if (string.IsNullOrWhiteSpace(edicion)) edicion = null;
                         var artNota = filasFiltradas.Select(r => r.Article).FirstOrDefault() ?? "69-b";
                         notasParaRegistrar.Add((codNota, title, pubDate, edicion, agency, artNota, download.Url, download.Hash, download.Path, filasFiltradas.Count));
 
