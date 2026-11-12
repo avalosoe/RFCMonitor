@@ -4,17 +4,21 @@ GO
 -- ============================================================================
 -- MonitorRFC - Script de Limpieza Integral (Reset)
 -- ============================================================================
--- Este script elimina de manera segura e idempotente todos los objetos de la
--- solución RFCMonitor en la base de datos SQL Server, respetando el orden
--- estricto de dependencias de claves foráneas y tipos de tabla.
+-- Este script elimina de manera segura e idempotente EXCLUSIVAMENTE los objetos
+-- propios de la solución RFCMonitor en la base de datos SQL Server.
+--
+-- DIRECTIVA FUNDAMENTAL:
+-- NO toca, modifica, altera ni elimina ningún objeto perteneciente a los
+-- proyectos legados (EdosSatScraper / RfcStatusApi), como tablas TBL_*, DOF_*,
+-- procedimientos PA_* o tipos de datos legados como dbo.RFCList.
 -- ============================================================================
 
--- 1. Vistas
+-- 1. Vistas de la solución RFCMonitor
 DROP VIEW IF EXISTS dbo.Vigentes;
 DROP VIEW IF EXISTS dbo.VistaContribuyentesVigentes;
 GO
 
--- 2. Procedimientos almacenados
+-- 2. Procedimientos almacenados de la solución RFCMonitor
 DROP PROCEDURE IF EXISTS dbo.AplicarCambiosSAT;
 DROP PROCEDURE IF EXISTS dbo.AplicarPublicacionDOF;
 DROP PROCEDURE IF EXISTS dbo.ConsultarContribuyentesVigentes;
@@ -29,29 +33,25 @@ DROP PROCEDURE IF EXISTS dbo.Apariciones;
 DROP PROCEDURE IF EXISTS dbo.Encabezado;
 GO
 
--- 3. Funciones
+-- 3. Funciones de la solución RFCMonitor
 DROP FUNCTION IF EXISTS dbo.FilasGeneracion;
 GO
 
--- 4. Tipos definidos por el usuario (deben eliminarse después de los SPs que los consumen)
+-- 4. Tipos definidos por el usuario de RFCMonitor (únicamente RfcInput)
 IF TYPE_ID(N'dbo.RfcInput') IS NOT NULL
 BEGIN
     DROP TYPE dbo.RfcInput;
 END;
-IF TYPE_ID(N'dbo.RFCList') IS NOT NULL
-BEGIN
-    DROP TYPE dbo.RFCList;
-END;
 GO
 
--- 5. Ruptura de dependencias circulares (FK de Publicacion hacia PublicacionVersion si existiera)
+-- 5. Ruptura de dependencias circulares de versiones intermedias de RFCMonitor
 IF EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = N'FK_mrf_ActiveVersion')
 BEGIN
     ALTER TABLE dbo.Publicacion DROP CONSTRAINT FK_mrf_ActiveVersion;
 END;
 GO
 
--- 6. Tablas principales de la solución RFCMonitor (Estructura Relacional Limpia)
+-- 6. Tablas principales de la solución RFCMonitor (Modelo Relacional Limpio)
 DROP TABLE IF EXISTS dbo.ContribuyenteHistorial;
 DROP TABLE IF EXISTS dbo.ContribuyenteVigente;
 DROP TABLE IF EXISTS dbo.ControlFuenteSAT;
@@ -63,7 +63,7 @@ DROP TABLE IF EXISTS dbo.BitacoraEjecucion;
 DROP TABLE IF EXISTS dbo.BloqueoServicio;
 GO
 
--- 7. Tablas de versiones intermedias y estructuras previas con JSON
+-- 7. Tablas de versiones intermedias de la solución RFCMonitor
 DROP TABLE IF EXISTS dbo.GeneracionActiva;
 DROP TABLE IF EXISTS dbo.GeneracionVersion;
 DROP TABLE IF EXISTS dbo.Generacion;
@@ -84,44 +84,7 @@ DROP TABLE IF EXISTS dbo.Adjunto;
 DROP TABLE IF EXISTS dbo.Lease;
 GO
 
--- 8. Tablas legadas y de versiones históricas (EdosSatScraper / RfcStatusApi)
-DROP TABLE IF EXISTS dbo.CampoFuente;
-DROP TABLE IF EXISTS dbo.MigracionEsquema;
-DROP TABLE IF EXISTS dbo.Detalle69;
-DROP TABLE IF EXISTS dbo.Detalle69B;
-DROP TABLE IF EXISTS dbo.Detalle69BBis;
-DROP TABLE IF EXISTS dbo.Detalle49Bis;
-DROP TABLE IF EXISTS dbo.Fila;
-DROP TABLE IF EXISTS dbo.Sat69BPublicacionEtapa;
-DROP TABLE IF EXISTS dbo.Sat69BBisPublicacionEtapa;
-DROP TABLE IF EXISTS dbo.Sat69BRegistro;
-DROP TABLE IF EXISTS dbo.Sat69BBisRegistro;
-DROP TABLE IF EXISTS dbo.CanceladosDetalle;
-DROP TABLE IF EXISTS dbo.ReduccionMultasDetalle;
-DROP TABLE IF EXISTS dbo.ConcursoMercantilDetalle;
-DROP TABLE IF EXISTS dbo.ReduccionRecargosDetalle;
-DROP TABLE IF EXISTS dbo.CondonadosDecretoDetalle;
-DROP TABLE IF EXISTS dbo.CondonadosHistoricoDetalle;
-DROP TABLE IF EXISTS dbo.CanceladosHistoricoDetalle;
-DROP TABLE IF EXISTS dbo.RetornoInversionesDetalle;
-DROP TABLE IF EXISTS dbo.ExigiblesDetalle;
-DROP TABLE IF EXISTS dbo.FirmesDetalle;
-DROP TABLE IF EXISTS dbo.NoLocalizadosDetalle;
-DROP TABLE IF EXISTS dbo.SentenciasDetalle;
-DROP TABLE IF EXISTS dbo.CsdSinEfectosDetalle;
-DROP TABLE IF EXISTS dbo.EntesOmisosDetalle;
-DROP TABLE IF EXISTS dbo.TBL_edos_d;
-DROP TABLE IF EXISTS dbo.TBL_edos_e;
-DROP TABLE IF EXISTS dbo.TBL_Listado69NL_d;
-DROP TABLE IF EXISTS dbo.TBL_Listado69NL;
-DROP TABLE IF EXISTS dbo.TBL_Listado69BBis_d;
-DROP TABLE IF EXISTS dbo.TBL_Listado69BBis;
-DROP TABLE IF EXISTS dbo.DOF_Contribuyente;
-DROP TABLE IF EXISTS dbo.DOF_EstatusRFC;
-DROP TABLE IF EXISTS dbo.DOF_Publicacion;
-GO
-
--- 9. Roles y permisos de base de datos
+-- 8. Roles y permisos de base de datos creados para RFCMonitor
 DECLARE @sql nvarchar(max) = N'';
 SELECT @sql = STRING_AGG(N'ALTER ROLE ' + QUOTENAME(r.name) + N' DROP MEMBER ' + QUOTENAME(m.name) + N';', CHAR(10))
 FROM sys.database_role_members rm
