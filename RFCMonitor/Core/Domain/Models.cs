@@ -322,6 +322,7 @@ public sealed record DofSyncResponse(
     int NotasFiscalesEncontradas,
     int TotalRegistrosProcesados,
     IReadOnlyList<DofSyncResumenTipo> ResumenPorTipo,
-    IReadOnlyList<DofSyncDetalleNota> DetalleNotas
+    IReadOnlyList<DofSyncDetalleNota> DetalleNotas,
+    IReadOnlyList<string>? Advertencias = null
 );
 

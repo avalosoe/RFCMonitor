@@ -143,12 +143,46 @@ public sealed class RfcsController(IRfcQueryService queries, SqlRepository repos
         if (!string.IsNullOrWhiteSpace(artStr) && !SourceCatalog.Articles.Contains(artStr))
             return Problem(statusCode: 400, title: $"Artículo '{artStr}' inválido o no reconocido.");
 
-        var options = new Contracts.AgentOptions();
-        try { Directory.CreateDirectory(options.DataDirectory); }
-        catch { options.DataDirectory = Path.Combine(Path.GetTempPath(), "MonitorRFC"); Directory.CreateDirectory(options.DataDirectory); }
+        var configured = HttpContext.RequestServices.GetService<IConfiguration>()?["Api:DataDirectory"];
+        var options = new Contracts.AgentOptions { DataDirectory = ResolveWritableDataDirectory(configured) };
 
-        var response = await repository.SincronizarDofPeriodoAsync(inicioDate, finDate, artStr, downloader, options, ct);
-        return Ok(response);
+        try
+        {
+            var response = await repository.SincronizarDofPeriodoAsync(inicioDate, finDate, artStr, downloader, options, ct);
+            return Ok(response);
+        }
+        catch (InvalidOperationException ex) when (ex.Message.StartsWith("Hay otra ingesta"))
+        {
+            return Problem(statusCode: 409, title: ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// La API es independiente del Worker: nunca usa carpetas del servicio. Guarda su evidencia DOF en
+    /// "Api:DataDirectory" (si se configura) o en "data" junto a la API, con respaldo en la carpeta temporal.
+    /// Se prueba escritura real (no solo CreateDirectory).
+    /// </summary>
+    private static string ResolveWritableDataDirectory(string? configured)
+    {
+        var candidates = new[]
+        {
+            string.IsNullOrWhiteSpace(configured) ? Path.Combine(AppContext.BaseDirectory, "data") : configured,
+            Path.Combine(AppContext.BaseDirectory, "data"),
+            Path.Combine(Path.GetTempPath(), "MonitorRFC")
+        };
+        foreach (var dir in candidates)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.Combine(dir, "evidence"));
+                var probe = Path.Combine(dir, "evidence", Guid.NewGuid().ToString("N") + ".probe");
+                System.IO.File.WriteAllText(probe, "ok");
+                System.IO.File.Delete(probe);
+                return dir;
+            }
+            catch { /* probar la siguiente carpeta */ }
+        }
+        throw new InvalidOperationException("No hay una carpeta con permiso de escritura para guardar la evidencia de DOF.");
     }
 
     // ------------------------------------------------------------------------

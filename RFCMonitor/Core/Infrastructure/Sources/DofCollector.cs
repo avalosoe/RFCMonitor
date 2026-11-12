@@ -17,9 +17,13 @@ public sealed class DofCollector(SafeDownloader downloader,SqlRepository reposit
         var results=new List<SourceResult>();
         var today=DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(DateTimeOffset.Now,Scheduling.ScheduleCalculator.Zone(options.Schedule.TimeZone)).DateTime);
         var days=await repository.PendingDofDaysAsync(options.DofStartDate,today,options.DofLookbackDays,options.DofDaysPerCycle,ct);
+        logger?.LogInformation("[DOF] {Total} día(s) pendiente(s) por consultar (inicio {Start:yyyy-MM-dd}, hoy {Today:yyyy-MM-dd}).", days.Count, options.DofStartDate, today);
+        var dayNumber=0;
         foreach(var date in days)
         {
             ct.ThrowIfCancellationRequested();
+            dayNumber++;
+            logger?.LogInformation("[DOF día {N}/{Total}] Consultando notas del {Date:yyyy-MM-dd}...", dayNumber, days.Count, date);
             var complete=true; var changes=0; long count=0; var errors=new List<string>();
             try
             {
@@ -49,6 +53,8 @@ public sealed class DofCollector(SafeDownloader downloader,SqlRepository reposit
                             if(!DateOnly.TryParseExact(dateText,"dd-MM-yyyy",CultureInfo.InvariantCulture,DateTimeStyles.None,out var published))
                                 throw new InvalidDataException("Nota DOF con fecha inválida.");
                             var parsed=DofParser.Parse(title,html,published);
+                            logger?.LogInformation("[DOF día {N}/{Total}] Nota {Code}: relevante={Relevant}; filas extraídas={Rows}; {Title}", dayNumber, days.Count, code, parsed.Relevant, parsed.Rows.Count,
+                                title.Length>90?title[..90]+"…":title);
                             foreach (var attachment in parsed.Attachments.Where(_ => parsed.Relevant))
                             {
                                 var url = new Uri(new Uri("https://www.dof.gob.mx/"), attachment).ToString();
@@ -101,6 +107,7 @@ public sealed class DofCollector(SafeDownloader downloader,SqlRepository reposit
             catch(Exception ex) {complete=false;errors.Add(SafeError.Describe(ex));}
             var description=errors.Count==0?null:string.Join(" ",errors.Take(10));
             await repository.CompleteDofDayAsync(date,complete,description,ct);
+            logger?.LogInformation("[DOF día {N}/{Total}] {Date:yyyy-MM-dd} terminado: completo={Complete}; notas con cambios={Changes}; filas={Rows}.", dayNumber, days.Count, date, complete, changes, count);
             results.Add(new("dof:"+date.ToString("yyyy-MM-dd"),!complete?"fallida":changes>0?"cambios":"sin-cambios",count,description));
         }
         if (results.Count == 0) return [];

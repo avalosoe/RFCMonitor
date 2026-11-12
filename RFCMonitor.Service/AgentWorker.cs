@@ -129,22 +129,24 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
         try
         {
             logger.LogInformation("Inicio de ejecución. Disparador={Trigger}; SAT={SatEnabled}; DOF={DofEnabled}", trigger, settings.SatEnabled, settings.DofEnabled);
+            logger.LogInformation("[Paso 1/6] Adquiriendo bloqueo exclusivo de ingesta en SQL Server...");
             await using var lease = await repo.AcquireLeaseAsync(ct);
             if (lease is null) throw new InvalidDataException("Otra instancia mantiene el bloqueo de ingesta; reintente.");
-            logger.LogInformation("Bloqueo de ingesta adquirido; validando catálogos SQL.");
+            logger.LogInformation("[Paso 1/6] Bloqueo de ingesta adquirido.");
+            logger.LogInformation("[Paso 2/6] Validando catálogos SQL...");
             await repo.EnsureCatalogAsync(ct, settings);
-            logger.LogInformation("Catálogos SQL listos.");
+            logger.LogInformation("[Paso 2/6] Catálogos SQL listos.");
             using var downloader = new SafeDownloader();
             if (settings.SatEnabled)
             {
                 try
                 {
-                    logger.LogInformation("Iniciando recolección SAT.");
+                    logger.LogInformation("[Paso 3/6] Iniciando recolección SAT...");
                     var results = await new SatCollector(downloader, repo, logger).RunAsync(settings, ct);
                     report.Fuentes.AddRange(results);
                     foreach (var source in results.Where(x => x.Resultado is "fallida" or "requiere-revision" || (x.Rechazados ?? 0) > 0))
                         logger.LogWarning("Fuente {Source} terminó como {Result}: {Detail}", source.Fuente, source.Resultado, source.Error);
-                    logger.LogInformation("SAT finalizado. Fuentes={Sources}; registros={Records}; fallidas={Failed}", results.Count, results.Sum(x => x.Registros), results.Count(x => x.Resultado == "fallida"));
+                    logger.LogInformation("[Paso 3/6] SAT finalizado. Fuentes={Sources}; registros={Records}; fallidas={Failed}", results.Count, results.Sum(x => x.Registros), results.Count(x => x.Resultado == "fallida"));
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                 catch (Exception ex)
@@ -158,10 +160,10 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
             {
                 try
                 {
-                    logger.LogInformation("Iniciando recolección DOF desde {DofStartDate}.", settings.DofStartDate);
+                    logger.LogInformation("[Paso 4/6] Iniciando recolección DOF desde {DofStartDate}...", settings.DofStartDate);
                     var results = await new DofCollector(downloader, repo, logger).RunAsync(settings, ct);
                     report.Fuentes.AddRange(results);
-                    logger.LogInformation("DOF finalizado. Fuentes={Sources}; registros={Records}; fallidas={Failed}", results.Count, results.Sum(x => x.Registros), results.Count(x => x.Resultado == "fallida"));
+                    logger.LogInformation("[Paso 4/6] DOF finalizado. Fuentes={Sources}; registros={Records}; fallidas={Failed}", results.Count, results.Sum(x => x.Registros), results.Count(x => x.Resultado == "fallida"));
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                 catch (Exception ex) { logger.LogError(ex, "La recolección DOF terminó con error."); report.Fuentes.Add(new("dof:publicaciones", "fallida", 0, SafeError.Describe(ex))); }
@@ -170,9 +172,11 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
             var anyChanges = report.Fuentes.Any(r => r.Resultado == "cambios");
             if (report.Fuentes.Any(r => r.Resultado is "cambios" or "sin-cambios") && (anyChanges || !hasActiveGeneration))
             {
-                logger.LogInformation("Publicando nueva generación de datos.");
+                logger.LogInformation("[Paso 5/6] Publicando nueva generación de datos...");
                 await repo.PublishGenerationAsync(ct);
+                logger.LogInformation("[Paso 5/6] Generación publicada.");
             }
+            else logger.LogInformation("[Paso 5/6] Sin cambios que publicar; se conserva la generación vigente.");
             report.Resultado = Outcome(report.Fuentes);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { report.Resultado = "cancelada"; logger.LogWarning("Ejecución cancelada por detención del servicio."); }
@@ -185,6 +189,7 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
         finally
         {
             report.Fin = DateTimeOffset.Now;
+            logger.LogInformation("[Paso 6/6] Guardando resumen de la ejecución y encolando correo...");
             using var finish = new CancellationTokenSource(TimeSpan.FromSeconds(20));
             var history = Path.Combine(settings.DataDirectory, "executions", report.EjecucionId.ToString("N") + ".json");
             AgentConfiguration.AtomicWrite(history, JsonSerializer.Serialize(report, AgentConfiguration.Json));

@@ -84,7 +84,7 @@ A continuación se documenta el catálogo completo de endpoints expuestos por la
 ### 4.4. Sincronización On-Demand del DOF
 | Método | Ruta | Descripción | Parámetros / Body |
 | :--- | :--- | :--- | :--- |
-| `POST` | `/api/v1/dof/sincronizar`<br>*(Alias: `/api/v1/dof/descargar`)* | Ejecuta la sincronización e ingesta manual de publicaciones del DOF para el periodo especificado, insertando en BD mediante tabla temporal `#tempdb` sin UNION y devolviendo resumen agrupado por tipo (encontrados, nuevos, actualizados). | Query o Body JSON: `fechaInicio` (obligatorio, `yyyy-MM-dd`), `fechaFin` (obligatorio, `yyyy-MM-dd`), `articulo` (opcional). |
+| `POST` | `/api/v1/dof/sincronizar`<br>*(Alias: `/api/v1/dof/descargar`)* | Ejecuta la sincronización e ingesta manual de publicaciones del DOF para el periodo especificado, insertando en BD mediante tabla temporal `#tempdb` sin UNION y comparando de forma masiva (bulk + set-based) y devolviendo resumen agrupado por tipo (encontrados, nuevos, actualizados, sin cambios) y `advertencias` con días/notas que no pudieron consultarse. Estados: `completado`, `sin_registros`, `sin_registros_con_advertencias`, `error_fuente`. | Query o Body JSON: `fechaInicio` (obligatorio, `yyyy-MM-dd`), `fechaFin` (obligatorio, `yyyy-MM-dd`), `articulo` (opcional). |
 
 ### 4.5. Documentos Técnicos
 | Método | Ruta | Descripción | Parámetros / Body |

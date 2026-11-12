@@ -15,12 +15,16 @@ public sealed class SatCollector(SafeDownloader downloader,IPublicationRepositor
         var results=new List<SourceResult>();
         var html=await downloader.TextAsync(CatalogUrl,options,ct);
         var page=new HtmlDocument(); page.LoadHtml(html);
-        foreach(var listing in SourceCatalog.Sat.Where(s=>options.EnabledSatSources.Length==0||options.EnabledSatSources.Contains(s.Key)))
+        var listings=SourceCatalog.Sat.Where(s=>options.EnabledSatSources.Length==0||options.EnabledSatSources.Contains(s.Key)).ToList();
+        var position=0;
+        logger.LogInformation("[SAT] Catálogo del portal descargado; {Total} listado(s) por evaluar.", listings.Count);
+        foreach(var listing in listings)
         {
             ct.ThrowIfCancellationRequested();
+            position++;
             try
             {
-                logger.LogInformation("Procesando listado SAT: {Key} ({Name})...", listing.Key, listing.Name);
+                logger.LogInformation("[SAT {N}/{Total}] Procesando listado {Key} ({Name})...", position, listings.Count, listing.Key, listing.Name);
                 var anchors=page.DocumentNode.SelectNodes("//a[@href]")??new HtmlNodeCollection(page.DocumentNode);
                 var file=Path.GetFileName(listing.RelativeUrl);
                 var anchor=anchors.FirstOrDefault(a=>Uri.TryCreate(new Uri(CatalogUrl),a.GetAttributeValue("href",""),out var u)&&

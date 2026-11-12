@@ -25,7 +25,9 @@ builder.Services.Configure<BrotliCompressionProviderOptions>(o => o.Level = Comp
 builder.Services.Configure<GzipCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
 builder.Services.AddSingleton<IClock, SystemClock>();
 builder.Services.AddSingleton<SafeDownloader>();
-builder.Services.AddScoped<SqlRepository>(_ => new SqlRepository(builder.Configuration.GetConnectionString("MonitorRFC") ?? ""));
+builder.Services.AddScoped<SqlRepository>(s => new SqlRepository(
+    builder.Configuration.GetConnectionString("MonitorRFC") ?? "",
+    s.GetRequiredService<ILoggerFactory>().CreateLogger<SqlRepository>()));
 builder.Services.AddScoped<IRfcQueryService>(s => s.GetRequiredService<SqlRepository>());
 builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = 8 * 1024 * 1024);
 builder.Services.AddRateLimiter(o =>
