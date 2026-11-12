@@ -134,7 +134,7 @@ public sealed class AgentWorker(AgentConfiguration configuration, EmailOutbox ou
                 try
                 {
                     logger.LogInformation("Iniciando recolección DOF desde {DofStartDate}.", settings.DofStartDate);
-                    var results = await new DofCollector(downloader, repo).RunAsync(settings, ct);
+                    var results = await new DofCollector(downloader, repo, logger).RunAsync(settings, ct);
                     report.Fuentes.AddRange(results);
                     logger.LogInformation("DOF finalizado. Fuentes={Sources}; registros={Records}; fallidas={Failed}", results.Count, results.Sum(x => x.Registros), results.Count(x => x.Resultado == "fallida"));
                 }

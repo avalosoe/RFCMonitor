@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using MonitorRFC.Application;
 using MonitorRFC.Contracts;
 using MonitorRFC.Domain;
@@ -8,7 +9,7 @@ using MonitorRFC.Infrastructure.Persistence;
 
 namespace MonitorRFC.Infrastructure.Sources;
 
-public sealed class DofCollector(SafeDownloader downloader,SqlRepository repository)
+public sealed class DofCollector(SafeDownloader downloader,SqlRepository repository, ILogger? logger = null)
 {
     private const string BaseUrl="https://sidof.segob.gob.mx/dof/sidof";
     public async Task<IReadOnlyList<SourceResult>> RunAsync(AgentOptions options,CancellationToken ct)
@@ -87,6 +88,7 @@ public sealed class DofCollector(SafeDownloader downloader,SqlRepository reposit
                         catch(Exception ex)
                         {
                             complete=false;
+                            logger?.LogWarning(ex, "Fallo al procesar nota DOF {Code}: {Message}", code, ex.Message);
                             var error=SafeError.Describe(ex);
                             await repository.SaveDofPendingAsync(code,date,error,ct);
                             errors.Add($"Nota {code}: {error}");

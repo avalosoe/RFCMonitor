@@ -81,9 +81,9 @@ public static class SafeError
     public static string Describe(Exception ex)=>ex switch
     {
         InvalidDataException => ex.Message,
-        HttpRequestException h => $"Fuente no disponible (HTTP {(int?)h.StatusCode}).",
+        HttpRequestException h => $"Fuente no disponible (HTTP {(int?)h.StatusCode}): {h.Message}",
         OperationCanceledException => "La operación excedió el tiempo permitido.",
-        Microsoft.Data.SqlClient.SqlException => "No se pudo completar la operación SQL.",
-        _ => "No se pudo completar la operación ("+ex.GetType().Name+")."
+        Microsoft.Data.SqlClient.SqlException s => $"Error SQL ({s.Number}): {s.Message}",
+        _ => $"{ex.Message} ({ex.GetType().Name})"
     };
 }

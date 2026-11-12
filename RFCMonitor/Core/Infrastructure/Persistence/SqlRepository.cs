@@ -34,7 +34,7 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
         p.Value = value switch { null => DBNull.Value, DateOnly d => d.ToDateTime(TimeOnly.MinValue), DateTimeOffset d => d.LocalDateTime, _ => value };
     }
     private SqlConnection Writer => leaseConnection is { State: ConnectionState.Open } c ? c :
-        throw new InvalidOperationException("La operación de ingesta requiere el lease exclusivo activo.");
+        throw new InvalidOperationException($"La operación de ingesta perdió la conexión del lease exclusivo (Estado: {leaseConnection?.State.ToString() ?? "Nula"}). Se requiere readquirir el lease.");
     public async Task<IAsyncDisposable?> AcquireLeaseAsync(CancellationToken ct)
     {
         if (leaseConnection is not null) throw new InvalidOperationException("Lease ya adquirido en esta instancia.");
