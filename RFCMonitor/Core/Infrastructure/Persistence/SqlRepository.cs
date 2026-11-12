@@ -147,7 +147,6 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                     {
                         batch.Rows.Add(version,row.Table,row.Row,cell.Columna,Convert.ToString(row.Typed.GetValueOrDefault("hoja"))??cell.Nombre,(object?)cell.Valor??DBNull.Value);
                         count++;
-                        if(batch.Rows.Count>=1000) await FlushAsync(c,transaction,batch,"dbo.DocumentoCelda",ct);
                     }
                 }
                 else
@@ -161,7 +160,6 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                     var sourceValid = SourceCatalog.Articles.Contains(row.Article) && (listing is null || (row.Article == listing.Article && row.Listing == listing.Slug));
                     rawRows.Rows.Add(version, row.Table, row.Row, (object?)rawRfc ?? DBNull.Value, true, DBNull.Value,
                         JsonSerializer.Serialize(row.Original, Json));
-                    if (rawRows.Rows.Count >= 1000) await FlushAsync(c, transaction, rawRows, "dbo.FilaFuente", ct);
                     if (!sourceValid) throw new InvalidDataException($"Fila física {row.Row}: fila fuera de su fuente.");
 
                     var name = row.Name ?? "";
@@ -175,7 +173,6 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                     batch.Rows.Add(version, row.Table, row.Row, rfc, name, row.Article, row.Listing, status,
                         row.PublicationDate is { } date ? date.ToDateTime(TimeOnly.MinValue) : DBNull.Value, (object?)entity ?? DBNull.Value, detail);
                     count++;
-                    if (batch.Rows.Count >= 1000) await FlushAsync(c, transaction, batch, "dbo.RegistroFuente", ct);
                 }
             }
             await FlushAsync(c,transaction,batch,isDocument?"dbo.DocumentoCelda":"dbo.RegistroFuente",ct);
@@ -246,7 +243,7 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
     private static async Task FlushAsync(SqlConnection c,SqlTransaction tx,DataTable batch,string table,CancellationToken ct)
     {
         if(batch.Rows.Count==0)return;
-        using var bulk=new SqlBulkCopy(c,SqlBulkCopyOptions.CheckConstraints,tx) { DestinationTableName=table,BatchSize=1000,BulkCopyTimeout=300,EnableStreaming=true };
+        using var bulk=new SqlBulkCopy(c,SqlBulkCopyOptions.CheckConstraints,tx) { DestinationTableName=table,BatchSize=0,BulkCopyTimeout=600,EnableStreaming=true };
         foreach(DataColumn col in batch.Columns) bulk.ColumnMappings.Add(col.ColumnName,col.ColumnName);
         await bulk.WriteToServerAsync(batch,ct); batch.Clear();
     }
