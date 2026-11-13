@@ -191,7 +191,11 @@ public sealed record GlobalContribuyenteDto(
     DateOnly? SentenciaFechaDOF,
     long? CodNotaDOF,
     string? UrlOrigenDOF,
-    DateTime? UltimaDescarga
+    DateTime? UltimaDescarga,
+    string? TituloDOF = null,
+    string? EdicionDOF = null,
+    long? CodDiarioDOF = null,
+    DateOnly? FechaPublicacionDOF = null
 );
 
 public sealed record EtapaOficio(string? OficioSAT, DateOnly? FechaSAT, string? OficioDOF, DateOnly? FechaDOF);
@@ -203,9 +207,19 @@ public sealed record RfcEtapas(
     EtapaOficio Sentencia
 );
 
+public sealed record DetalleDOF(
+    long? CodNota,
+    string? Titulo,
+    string? Edicion,
+    long? CodDiario,
+    DateOnly? FechaPublicacion,
+    string? UrlOrigen
+);
+
 public sealed record RfcPublicacionVigente(
-    int TipoId,
+    int ArticuloId,
     string Articulo,
+    int ListadoId,
     string Listado,
     string Situacion,
     DateOnly? FechaEfectiva,
@@ -224,15 +238,16 @@ public sealed record RfcPublicacionVigente(
     string? NumeroOficioDOF,
     DateOnly? FechaOficioDOF,
     RfcEtapas Etapas,
-    long? CodNotaDOF,
-    string? UrlOrigenDOF,
-    DateTime FechaModificacion
+    DetalleDOF? Dof,
+    DateTime FechaModificacion,
+    int TipoId = 0
 );
 
 public sealed record RfcEstadoContribuyente(
     string Rfc,
     bool Encontrado,
     string? RazonSocial,
+    string DiagnosticoRiesgo,
     IReadOnlyList<string> Articulos,
     DateOnly? FechaEfectivaReciente,
     string? OrigenMasReciente,
@@ -245,7 +260,7 @@ public sealed record RfcEstadoContribuyente(
     bool EsExigible,
     bool EsFirme,
     bool EsNoLocalizado,
-    IReadOnlyList<RfcPublicacionVigente> Publicaciones
+    IReadOnlyList<RfcPublicacionVigente> Apariciones
 );
 
 public sealed record RfcEstadoResponse(
@@ -258,16 +273,16 @@ public sealed record RfcEstadoResponse(
 
 public sealed record HistorialEventoDto(
     long HistorialId,
-    int TipoId,
+    int ArticuloId,
     string Articulo,
+    int ListadoId,
     string Listado,
     string Situacion,
-    DateOnly? FechaEfectiva,
-    string TipoEvento,
+    DateOnly? Fecha,
     string Origen,
     DateTime FechaRegistro,
-    long? CodNotaDOF,
-    string? UrlOrigen,
+    string? TipoEvento,
+    DetalleDOF? Dof,
     string? NumeroOficioSAT,
     DateOnly? FechaOficioSAT,
     string? NumeroOficioDOF,
@@ -279,14 +294,17 @@ public sealed record HistorialEventoDto(
 public sealed record RfcHistorialContribuyente(
     string Rfc,
     string? RazonSocial,
-    int TotalEventos,
-    IReadOnlyList<HistorialEventoDto> LineaTiempo
+    int TotalMovimientos,
+    DateOnly? PrimerMovimiento,
+    DateOnly? UltimoMovimiento,
+    IReadOnlyList<HistorialEventoDto> Movimientos
 );
 
 public sealed record RfcHistorialResponse(
     DateTimeOffset ConsultadaEn,
     int TotalSolicitados,
-    IReadOnlyList<RfcHistorialContribuyente> HistorialPorRfc
+    int TotalEncontrados,
+    IReadOnlyList<RfcHistorialContribuyente> Contribuyentes
 );
 
 public sealed record DofSyncRequest(

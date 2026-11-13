@@ -186,21 +186,42 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                 using var clearDoc = Command(c, "DELETE FROM dbo.DocumentoTecnico69;", transaction);
                 await WithHeartbeatAsync("DELETE dbo.DocumentoTecnico69", () => clearDoc.ExecuteNonQueryAsync(ct), ct);
 
-                using var docTable = CreateDocumentBatch();
-                long docCount = 0;
+                var cellList = new List<(int Tabla, int Fila, int Columna, string Hoja, string? Valor)>();
                 await foreach (var row in rows.WithCancellation(ct))
                 {
                     foreach (var cell in row.Original)
                     {
                         var hoja = Convert.ToString(row.Typed.GetValueOrDefault("hoja")) ?? cell.Nombre;
-                        docTable.Rows.Add(row.Table, row.Row, cell.Columna, hoja, (object?)cell.Valor ?? DBNull.Value, DateTime.Now);
-                        docCount++;
+                        cellList.Add((row.Table, row.Row, cell.Columna, hoja, cell.Valor));
                     }
                 }
 
+                long docCount = cellList.Count;
                 logger?.LogInformation("Insertando matriz de celdas en dbo.DocumentoTecnico69 ({Count:N0} celdas)...", docCount);
-                await WithHeartbeatAsync("Carga bulk de dbo.DocumentoTecnico69", () => FlushAsync(c, transaction, docTable, "dbo.DocumentoTecnico69", ct, logger), ct);
-                logger?.LogInformation("  [Documento técnico] Carga bulk finalizada; actualizando control de fuente y confirmando transacción...");
+
+                const int batchSize = 100;
+                for (int i = 0; i < cellList.Count; i += batchSize)
+                {
+                    var chunk = cellList.Skip(i).Take(batchSize).ToList();
+                    var sb = new StringBuilder("INSERT INTO dbo.DocumentoTecnico69 (Tabla, Fila, Columna, Hoja, Valor, FechaRegistro) VALUES ");
+                    using var insertCmd = c.CreateCommand();
+                    insertCmd.Transaction = transaction;
+                    insertCmd.CommandTimeout = 120;
+
+                    for (int j = 0; j < chunk.Count; j++)
+                    {
+                        if (j > 0) sb.Append(", ");
+                        sb.Append($"(@t{j}, @f{j}, @c{j}, @h{j}, @v{j}, SYSDATETIME())");
+                        insertCmd.Parameters.Add(new SqlParameter($"@t{j}", SqlDbType.Int) { Value = chunk[j].Tabla });
+                        insertCmd.Parameters.Add(new SqlParameter($"@f{j}", SqlDbType.Int) { Value = chunk[j].Fila });
+                        insertCmd.Parameters.Add(new SqlParameter($"@c{j}", SqlDbType.Int) { Value = chunk[j].Columna });
+                        insertCmd.Parameters.Add(new SqlParameter($"@h{j}", SqlDbType.NVarChar, 300) { Value = chunk[j].Hoja });
+                        insertCmd.Parameters.Add(new SqlParameter($"@v{j}", SqlDbType.NVarChar, 4000) { Value = (object?)chunk[j].Valor ?? DBNull.Value });
+                    }
+                    insertCmd.CommandText = sb.ToString();
+                    await insertCmd.ExecuteNonQueryAsync(ct);
+                }
+                logger?.LogInformation("  [Documento técnico] Carga finalizada ({Count:N0} celdas); actualizando control de fuente y confirmando transacción...", docCount);
 
                 using var updateSourceDoc = Command(c, """
                     UPDATE dbo.ControlFuenteSAT
@@ -705,11 +726,13 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                                .OrderByDescending(p => p.FechaEfectiva).FirstOrDefault();
             if (sat is null) continue;
             resultado.Remove(dof);
-            if (sat.CodNotaDOF is null)
-            {
-                var i = resultado.IndexOf(sat);
-                resultado[i] = sat with { CodNotaDOF = dof.CodNotaDOF, UrlOrigenDOF = dof.UrlOrigenDOF, NumeroOficioDOF = sat.NumeroOficioDOF ?? dof.NumeroOficioDOF, FechaOficioDOF = sat.FechaOficioDOF ?? dof.FechaOficioDOF };
-            }
+            var i = resultado.IndexOf(sat);
+            var mergedDof = sat.Dof ?? dof.Dof;
+            resultado[i] = sat with {
+                Dof = mergedDof,
+                NumeroOficioDOF = sat.NumeroOficioDOF ?? dof.NumeroOficioDOF,
+                FechaOficioDOF = sat.FechaOficioDOF ?? dof.FechaOficioDOF
+            };
         }
         return resultado;
     }
@@ -1063,7 +1086,7 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
     }
 
     public async IAsyncEnumerable<GlobalContribuyenteDto> ConsultarGlobalVigentesAsync(
-        string? articulo, string? listado, string? situacion, [EnumeratorCancellation] CancellationToken ct)
+        string? articulo, string? listado, string? situacion, [EnumeratorCancellation] CancellationToken ct, bool ordenarPorJerarquia = false)
     {
         await using var c = await OpenAsync(ct);
         using var cmd = Command(c, "dbo.ConsultarContribuyentesVigentes");
@@ -1072,6 +1095,7 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
         P(cmd, "@Listado", SqlDbType.VarChar, listado, 100);
         P(cmd, "@Situacion", SqlDbType.NVarChar, situacion, 200);
         P(cmd, "@FiltrarRfc", SqlDbType.Bit, false);
+        P(cmd, "@OrdenarPorJerarquia", SqlDbType.Bit, ordenarPorJerarquia);
         var table = new DataTable();
         table.Columns.Add("Rfc", typeof(string));
         table.Columns.Add("OrdenEntrada", typeof(int));
@@ -1088,6 +1112,11 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
             var list = r.GetString(4);
             var sit = r.GetString(5);
             var tipoId = CatalogoTipos.ResolverTipoId(art, list, sit);
+
+            var tituloDof = r.FieldCount > 41 ? GetString(r, 41) : null;
+            var edicionDof = r.FieldCount > 42 ? GetString(r, 42) : null;
+            var codDiarioDof = r.FieldCount > 43 ? GetInt64(r, 43) : null;
+            var fechaPubDof = r.FieldCount > 44 ? GetDateOnly(r, 44) : null;
 
             yield return new GlobalContribuyenteDto(
                 ContribuyenteId: Convert.ToInt64(r.GetValue(0)),
@@ -1131,7 +1160,11 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                 SentenciaFechaDOF: GetDateOnly(r, 37),
                 CodNotaDOF: GetInt64(r, 38),
                 UrlOrigenDOF: GetString(r, 39),
-                UltimaDescarga: r.IsDBNull(40) ? null : r.GetDateTime(40)
+                UltimaDescarga: r.IsDBNull(40) ? null : r.GetDateTime(40),
+                TituloDOF: tituloDof,
+                EdicionDOF: edicionDof,
+                CodDiarioDOF: codDiarioDof,
+                FechaPublicacionDOF: fechaPubDof
             );
         }
     }
@@ -1156,6 +1189,7 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
         P(cmd, "@Listado", SqlDbType.VarChar, listado, 100);
         P(cmd, "@Situacion", SqlDbType.NVarChar, null);
         P(cmd, "@FiltrarRfc", SqlDbType.Bit, true);
+        P(cmd, "@OrdenarPorJerarquia", SqlDbType.Bit, false);
         var p = cmd.Parameters.Add("@Rfcs", SqlDbType.Structured);
         p.TypeName = "dbo.RfcInput";
         p.Value = table;
@@ -1214,6 +1248,15 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                 var codNota = GetInt64(r, 38);
                 var urlOrigen = GetString(r, 39);
 
+                var tituloDof = r.FieldCount > 41 ? GetString(r, 41) : null;
+                var edicionDof = r.FieldCount > 42 ? GetString(r, 42) : null;
+                var codDiarioDof = r.FieldCount > 43 ? GetInt64(r, 43) : null;
+                var fechaPubDof = r.FieldCount > 44 ? GetDateOnly(r, 44) : null;
+
+                DetalleDOF? dofInfo = (codNota.HasValue || !string.IsNullOrEmpty(urlOrigen) || !string.IsNullOrEmpty(tituloDof))
+                    ? new DetalleDOF(codNota, tituloDof, edicionDof, codDiarioDof, fechaPubDof, urlOrigen)
+                    : null;
+
                 var etapas = new RfcEtapas(
                     new EtapaOficio(presOficioSat, presFechaSat, presOficioDof, presFechaDof),
                     new EtapaOficio(desvOficioSat, desvFechaSat, desvOficioDof, desvFechaDof),
@@ -1222,11 +1265,34 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                 );
 
                 var tipoId = CatalogoTipos.ResolverTipoId(art, list, sit);
+                var artId = CatalogoTipos.ObtenerArticuloId(art);
+                var listId = CatalogoTipos.ResolverListadoId(art, list);
 
                 var pub = new RfcPublicacionVigente(
-                    tipoId, art, list, sit, fechaEfectiva, origen, tipoPersona, entidad,
-                    monto, ejercicio, periodo, motivo, fechaCancel, fechaAuto, admin,
-                    oficioSat, fechaSat, oficioDof, fechaDof, etapas, codNota, urlOrigen, fechaMod
+                    ArticuloId: artId,
+                    Articulo: art,
+                    ListadoId: listId,
+                    Listado: list,
+                    Situacion: sit,
+                    FechaEfectiva: fechaEfectiva,
+                    Origen: origen,
+                    TipoPersona: tipoPersona,
+                    EntidadFederativa: entidad,
+                    Monto: monto,
+                    Ejercicio: ejercicio,
+                    Periodo: periodo,
+                    Motivo: motivo,
+                    FechaCancelacion: fechaCancel,
+                    FechaAutorizacion: fechaAuto,
+                    Administracion: admin,
+                    NumeroOficioSAT: oficioSat,
+                    FechaOficioSAT: fechaSat,
+                    NumeroOficioDOF: oficioDof,
+                    FechaOficioDOF: fechaDof,
+                    Etapas: etapas,
+                    Dof: dofInfo,
+                    FechaModificacion: fechaMod,
+                    TipoId: tipoId
                 );
 
                 if (!publicacionesPorRfc.TryGetValue(rfc, out var lista))
@@ -1262,10 +1328,18 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                 var esFirm = pubs.Any(p => p.Articulo == "69" && p.Listado == "firmes");
                 var esNoLoc = pubs.Any(p => p.Articulo == "69" && p.Listado == "no-localizados");
 
+                string riesgo;
+                if (esDef || pubs.Any(p => p.Articulo == "69-b-bis")) riesgo = "Critico";
+                else if (esPres) riesgo = "Presunto";
+                else if (esSent || esDesv) riesgo = "Favorable";
+                else if (esCanc || esCond || esExig || esFirm || esNoLoc || pubs.Any(p => p.Articulo == "49-bis")) riesgo = "Informativo";
+                else riesgo = "Limpio";
+
                 contribuyentes.Add(new RfcEstadoContribuyente(
                     Rfc: rfc,
                     Encontrado: true,
                     RazonSocial: razonSocialPorRfc.GetValueOrDefault(rfc),
+                    DiagnosticoRiesgo: riesgo,
                     Articulos: arts,
                     FechaEfectivaReciente: fechaMasReciente,
                     OrigenMasReciente: origenMasReciente,
@@ -1278,7 +1352,7 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                     EsExigible: esExig,
                     EsFirme: esFirm,
                     EsNoLocalizado: esNoLoc,
-                    Publicaciones: pubs
+                    Apariciones: pubs
                 ));
             }
             else
@@ -1287,6 +1361,7 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                     Rfc: rfc,
                     Encontrado: false,
                     RazonSocial: null,
+                    DiagnosticoRiesgo: "Limpio",
                     Articulos: [],
                     FechaEfectivaReciente: null,
                     OrigenMasReciente: null,
@@ -1299,7 +1374,7 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                     EsExigible: false,
                     EsFirme: false,
                     EsNoLocalizado: false,
-                    Publicaciones: []
+                    Apariciones: []
                 ));
             }
         }
@@ -1358,11 +1433,37 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                 var ent = GetString(r, 16);
                 var mot = GetString(r, 17);
 
+                var titDof = r.FieldCount > 18 ? GetString(r, 18) : null;
+                var edDof = r.FieldCount > 19 ? GetString(r, 19) : null;
+                var diaDof = r.FieldCount > 20 ? GetInt64(r, 20) : null;
+                var fPubDof = r.FieldCount > 21 ? GetDateOnly(r, 21) : null;
+
+                DetalleDOF? dofInfo = (codNota.HasValue || !string.IsNullOrEmpty(url) || !string.IsNullOrEmpty(titDof))
+                    ? new DetalleDOF(codNota, titDof, edDof, diaDof, fPubDof, url)
+                    : null;
+
                 var tipoId = CatalogoTipos.ResolverTipoId(art, list, sit);
+                var artId = CatalogoTipos.ObtenerArticuloId(art);
+                var listId = CatalogoTipos.ResolverListadoId(art, list);
 
                 var dto = new HistorialEventoDto(
-                    id, tipoId, art, list, sit, fechaEf, evento, origen,
-                    fechaReg, codNota, url, ofSat, fSat, ofDof, fDof, ent, mot
+                    HistorialId: id,
+                    ArticuloId: artId,
+                    Articulo: art,
+                    ListadoId: listId,
+                    Listado: list,
+                    Situacion: sit,
+                    Fecha: fechaEf,
+                    Origen: origen,
+                    FechaRegistro: fechaReg,
+                    TipoEvento: evento,
+                    Dof: dofInfo,
+                    NumeroOficioSAT: ofSat,
+                    FechaOficioSAT: fSat,
+                    NumeroOficioDOF: ofDof,
+                    FechaOficioDOF: fDof,
+                    EntidadFederativa: ent,
+                    Motivo: mot
                 );
 
                 if (!historialPorRfc.TryGetValue(rfc, out var lista))
@@ -1378,18 +1479,25 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
         foreach (var rfc in normalizedRfcs)
         {
             var eventos = historialPorRfc.GetValueOrDefault(rfc) ?? [];
+            var primer = eventos.FirstOrDefault(e => e.Fecha.HasValue)?.Fecha;
+            var ultimo = eventos.LastOrDefault(e => e.Fecha.HasValue)?.Fecha;
+
             resultado.Add(new RfcHistorialContribuyente(
                 Rfc: rfc,
                 RazonSocial: razonSocialPorRfc.GetValueOrDefault(rfc),
-                TotalEventos: eventos.Count,
-                LineaTiempo: eventos
+                TotalMovimientos: eventos.Count,
+                PrimerMovimiento: primer,
+                UltimoMovimiento: ultimo,
+                Movimientos: eventos
             ));
         }
 
+        var encontrados = resultado.Count(c => c.TotalMovimientos > 0);
         return new RfcHistorialResponse(
             ConsultadaEn: DateTimeOffset.Now,
             TotalSolicitados: normalizedRfcs.Length,
-            HistorialPorRfc: resultado
+            TotalEncontrados: encontrados,
+            Contribuyentes: resultado
         );
     }
 

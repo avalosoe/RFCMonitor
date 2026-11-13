@@ -61,23 +61,26 @@ A continuación se documenta el catálogo completo de endpoints expuestos por la
 ### 4.2. Catálogo y Configuración de Fuentes
 | Método | Ruta | Descripción | Parámetros / Body |
 | :--- | :--- | :--- | :--- |
-| `GET` | `/api/v1/articulos` | Devuelve la lista de artículos fiscales soportados (`69`, `69-b`, `69-b-bis`, `49-bis`). | Ninguno. |
+| `GET` | `/api/v1/catalogos` | Catálogo jerárquico completo que agrupa Artículos (IDs 1 al 4) y sus Listados/Supuestos oficiales (IDs 1 al 24). | Ninguno. |
+| `GET` | `/api/v1/catalogos/articulos` | Catálogo plano de Artículos Fiscales soportados con sus IDs numéricos oficiales (`1`: 69, `2`: 69-b, `3`: 69-b-bis, `4`: 49-bis). | Ninguno. |
+| `GET` | `/api/v1/catalogos/listados` | Catálogo plano de Listados y Supuestos oficiales (IDs 1 al 24), con filtro opcional por artículo. | Query opcional: `articuloId` (int) o `articulo` (string). |
+| `GET` | `/api/v1/articulos` | Devuelve la lista de claves de artículos fiscales soportados (`69`, `69-b`, `69-b-bis`, `49-bis`). | Ninguno. |
 | `GET` | `/api/v1/articulos/{articulo}/listados` | Obtiene los listados y supuestos disponibles para un artículo dado (incluye orígenes SAT y Publicaciones DOF). | Path: `articulo` (ej. `69-b`). |
-| `GET` | `/api/v1/tipos` | Expone el catálogo oficial de tipos fiscales numéricos (1 al N) asignados a cada artículo y listado. | Ninguno. |
+| `GET` | `/api/v1/tipos` | Expone el catálogo legacy de tipos fiscales numéricos (1 al N) asignados a cada artículo y listado. | Ninguno. |
 | `GET` | `/api/v1/tipos/{tipoId}` | Consulta la definición y detalle de un tipo fiscal numérico específico (1..N). | Path: `tipoId` (int, ej. `15`). |
 | `GET` | `/api/v1/fuentes/estado`<br>*(Alias: `/api/v1/descargas/estado`)* | Devuelve el estado operativo detallado de las descargas: última fecha de publicación portal SAT, último intento de ejecución, última descarga exitosa, métricas de registros (vigentes, nuevos, modificados, sin cambios) y cobertura DOF. | Ninguno. |
 
 ### 4.3. Consultas de Contribuyentes y RFCs
 | Método | Ruta | Descripción | Parámetros / Body |
 | :--- | :--- | :--- | :--- |
-| `GET` | `/api/v1/contribuyentes/global`<br>*(Alias: `/api/v1/rfcs/global`)* | Listado global que involucra a todos los tipos y artículos, proyectando todas las columnas relacionales reales mediante streaming JSON ultrarrápido y comprimido (Brotli/Gzip). | Query opcional: `tipoId` (int), `articulo`, `listado`, `situacion`. |
+| `GET` | `/api/v1/contribuyentes`<br>*(Aliases: `/api/v1/contribuyentes/global`, `/api/v1/rfcs/global`)* | Listado jerárquico estructurado (`articulos` -> `listados` -> `contribuyentes`) con streaming JSON en O(1) de memoria. Expone todas las columnas relacionales reales (oficios SAT/DOF, etapas 69-B, metadatos y enlaces directos al DOF). Admite filtros opcionales por IDs numéricos o claves. | Query opcional: `articuloId` (int) o `articulo` (string), `listadoId` (int) o `listado` (string), `situacion`, `tipoId` (int). |
 | `GET` | `/api/v1/tipos/{tipoId}/contribuyentes` | Consulta de contribuyentes asociados exclusivamente a un tipo fiscal numérico. | Path: `tipoId` (int, ej. `15`).<br>Query opcional: `incluirHistorial` (bool). |
-| `POST` | `/api/v1/rfcs/estado` | Consulta masiva consolidada para un arreglo de RFCs; devuelve en qué artículos aparece, fecha efectiva más reciente, folios/oficios SAT y DOF, montos, entidad federativa y etapas fiscales. | Query opcional: `articulo`, `listado`.<br>Body JSON: `["RFC1", "RFC2"]` o `{ "rfcs": ["RFC1"] }`. |
-| `POST` | `/api/v1/rfcs/historial` | Historial cronológico masivo para un arreglo de RFCs, mostrando su trazabilidad de movimientos y cambios de estatus a lo largo del tiempo. | Query opcional: `articulo`, `listado`.<br>Body JSON: `["RFC1", "RFC2"]` o `{ "rfcs": ["RFC1"] }`. |
+| `POST` | `/api/v1/rfcs/estado` | Consulta masiva consolidada para un arreglo de RFCs; clasifica el diagnóstico de riesgo (`Critico`, `Presunto`, `Favorable`, `Informativo`, `Limpio`), expone en qué artículos aparece, fecha efectiva más reciente, folios/oficios SAT y DOF, montos, entidad federativa, etapas fiscales y metadatos DOF integrados. | Query opcional: `articuloId` (int) o `articulo` (string), `listadoId` (int) o `listado` (string).<br>Body JSON: `["RFC1", "RFC2"]` o `{ "rfcs": ["RFC1"] }`. |
+| `POST` | `/api/v1/rfcs/historial` | Historial cronológico masivo para un arreglo de RFCs, ordenado estrictamente en sentido **ascendente por fecha**, mostrando su trazabilidad completa de movimientos, cambios de situación, `articuloId`, `listadoId`, oficios y detalles DOF. | Query opcional: `articuloId` (int) o `articulo` (string), `listadoId` (int) o `listado` (string).<br>Body JSON: `["RFC1", "RFC2"]` o `{ "rfcs": ["RFC1"] }`. |
 | `GET` | `/api/v1/rfcs` | Consulta consolidada de todos los RFCs y sus apariciones publicadas mediante streaming JSON. | Query opcional: `incluirHistorial` (bool, default `false`). |
 | `POST` | `/api/v1/rfcs/consultar` | Consulta masiva consolidada; puede limitarse a un artículo o listado. Soporta array directo o formato objeto legacy. | Query opcional: `articulo`, `listado`, `incluirHistorial` (bool).<br>Body JSON: `["RFC1", "RFC2"]` o `{ "rfcs": ["RFC1"] }`. |
 | `GET` | `/api/v1/rfcs/{rfc}/estatus` | Estatus general vigente de un RFC en todos los artículos y fuentes certificadas. | Path: `rfc`. |
-| `GET` | `/api/v1/rfcs/{rfc}/historial` | Historial de apariciones SAT y DOF de un RFC, con filtro opcional por artículo/listado. | Path: `rfc`.<br>Query opcional: `articulo`, `listado`. |
+| `GET` | `/api/v1/rfcs/{rfc}/historial` | Historial de apariciones SAT y DOF de un RFC, ordenado cronológicamente ascendente. | Path: `rfc`.<br>Query opcional: `articulo`, `listado`. |
 | `GET` | `/api/v1/articulos/{articulo}/contribuyentes` | Consulta de contribuyentes asociados exclusivamente a un artículo específico. | Path: `articulo`.<br>Query opcional: `incluirHistorial` (bool). |
 | `GET` | `/api/v1/articulos/{articulo}/listados/{listado}/contribuyentes` | Consulta de contribuyentes filtrando por artículo y listado concreto (ej. `definitivos`, `presuntos`, etc.). | Path: `articulo`, `listado`.<br>Query opcional: `incluirHistorial` (bool). |
 
