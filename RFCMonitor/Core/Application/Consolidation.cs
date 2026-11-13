@@ -36,8 +36,14 @@ public static class Consolidation
         }
         while (requested is not null && index < requested.Length) yield return Build(requested[index++], []);
     }
+    /// <summary>Omite la aparición vigente de "publicaciones-dof" ya cubierta por un listado del SAT del mismo artículo con fecha igual o más reciente.</summary>
+    private static List<Appearance> CollapseDof(List<Appearance> rows) =>
+        rows.Where(r => r.Historical || r.Listing != "publicaciones-dof" || !r.PublicationDate.HasValue
+            || !rows.Any(o => !o.Historical && o.Listing != "publicaciones-dof" && o.Article == r.Article && o.PublicationDate >= r.PublicationDate)).ToList();
+
     private static ConsolidatedRfc Build(string rfc, List<Appearance> rows)
     {
+        rows = CollapseDof(rows);
         var listings = rows.Select(r => r.Article + "/" + r.Listing).Distinct().ToArray();
         return new(rfc, rows.Count > 0, rows.Select(r => r.Name).Distinct().ToArray(),
             new(rows.Select(r => r.Article).Distinct().ToArray(), listings,

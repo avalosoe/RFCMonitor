@@ -406,6 +406,7 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
     // ------------------------------------------------------------------------
 
     private const int LockTimeoutMs = 180_000;
+    private int monitoredSpid;
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(30);
 
     private Task WithHeartbeatAsync(string step, Func<Task> action, CancellationToken ct) =>
@@ -465,7 +466,25 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
             await using var r = await cmd.ExecuteReaderAsync(timeout.Token);
             while (await r.ReadAsync(timeout.Token))
                 sb.Append($"sesión {r.GetValue(0)} bloqueada por {r.GetValue(1)} ({(r.IsDBNull(2) ? "-" : r.GetString(2))}, {r.GetValue(3)} ms, app='{(r.IsDBNull(4) ? "" : r.GetString(4))}', host='{(r.IsDBNull(5) ? "" : r.GetString(5))}', sql='{(r.IsDBNull(6) ? "" : r.GetString(6))}'); ");
-            return sb.Length == 0 ? "Sin bloqueos detectados en SQL Server (el paso está trabajando o esperando red/disco)." : "Bloqueos: " + sb;
+            await r.CloseAsync();
+            if (monitoredSpid > 0)
+            {
+                // Estado de la propia sesión de ingesta: qué espera y qué sentencia ejecuta.
+                using var own = Command(c, """
+                    SELECT r.status, r.command, r.wait_type, r.wait_time, r.blocking_session_id, r.cpu_time, r.logical_reads,
+                           LEFT(REPLACE(REPLACE(SUBSTRING(t.text, r.statement_start_offset/2+1,
+                                (CASE WHEN r.statement_end_offset=-1 THEN DATALENGTH(t.text) ELSE r.statement_end_offset END - r.statement_start_offset)/2+1),
+                                CHAR(13),' '),CHAR(10),' '),200)
+                    FROM sys.dm_exec_requests r OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) t WHERE r.session_id=@spid;
+                    """);
+                own.CommandTimeout = 8;
+                P(own, "@spid", SqlDbType.Int, monitoredSpid);
+                await using var o = await own.ExecuteReaderAsync(timeout.Token);
+                if (await o.ReadAsync(timeout.Token))
+                    sb.Append($"Sesión de ingesta {monitoredSpid}: estado={o.GetValue(0)}, comando={o.GetValue(1)}, espera={(o.IsDBNull(2) ? "-" : o.GetString(2))} {o.GetValue(3)} ms, bloqueada por={o.GetValue(4)}, cpu={o.GetValue(5)} ms, lecturas={o.GetValue(6)}, sql='{(o.IsDBNull(7) ? "" : o.GetString(7))}'. ");
+                else sb.Append($"Sesión de ingesta {monitoredSpid}: sin solicitud activa en SQL Server (la espera está del lado del cliente/red). ");
+            }
+            return sb.Length == 0 ? "Sin bloqueos detectados en SQL Server (el paso está trabajando o esperando red/disco)." : "Detalle: " + sb;
         }
         catch (Exception ex) { return "No fue posible consultar bloqueos: " + ex.Message; }
     }
@@ -525,6 +544,10 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
         SqlConnection c, SqlTransaction tx, DataTable staging, IReadOnlyList<DofNoteMeta> notes, CancellationToken ct)
     {
         var resumen = new List<DofSyncResumenTipo>();
+        monitoredSpid = c.ServerProcessId;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        void Sub(string text) { logger?.LogInformation("    [DOF-SQL spid {Spid}] {Text} (+{Ms:N0} ms)", monitoredSpid, text, sw.ElapsedMilliseconds); sw.Restart(); }
+        Sub($"Inicio; {staging.Rows.Count:N0} fila(s) en memoria, {notes.Count} nota(s)");
 
         using (var create = Command(c, """
             SET LOCK_TIMEOUT 180000;
@@ -545,6 +568,7 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
             );
             """, tx))
             await create.ExecuteNonQueryAsync(ct);
+        Sub("a) Tabla temporal #DofStaging creada");
 
         if (staging.Rows.Count > 0)
         {
@@ -552,9 +576,28 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
             foreach (DataColumn col in staging.Columns) bulk.ColumnMappings.Add(col.ColumnName, col.ColumnName);
             await bulk.WriteToServerAsync(staging, ct);
         }
+        Sub("b) Carga bulk a #DofStaging");
 
         using (var prepare = Command(c, """
-            -- Un RFC solo puede aparecer una vez por artículo/listado en la comparativa: conservar la fecha más reciente.
+            -- Historial idempotente y COMPLETO: una fila por RFC/artículo/listado/nota DOF, ANTES de depurar el staging,
+            -- para conservar la trazabilidad (p. ej. presunto en enero y definitivo en agosto del mismo RFC).
+            INSERT INTO dbo.ContribuyenteHistorial (
+                Rfc, RazonSocial, Articulo, Listado, Situacion, FechaEfectiva,
+                TipoEvento, Origen, FechaRegistro, CodNotaDOF, UrlOrigen,
+                NumeroOficioSAT, FechaOficioSAT, NumeroOficioDOF, FechaOficioDOF,
+                EntidadFederativa, Motivo, HashFila)
+            SELECT x.Rfc, x.RazonSocial, x.Articulo, x.Listado, x.Situacion, x.FechaEfectiva,
+                   'Publicacion DOF', 'DOF', SYSDATETIME(), x.CodNotaDOF, x.UrlOrigen,
+                   NULL, NULL, x.NumeroOficioDOF, x.FechaEfectiva,
+                   x.EntidadFederativa, x.Motivo, x.HashFila
+            FROM (SELECT s.*, ROW_NUMBER() OVER (PARTITION BY s.Rfc, s.Articulo, s.Listado, s.CodNotaDOF ORDER BY s.FechaEfectiva DESC) AS rn
+                  FROM #DofStaging s) x
+            WHERE x.rn = 1
+              AND NOT EXISTS (SELECT 1 FROM dbo.ContribuyenteHistorial h
+                              WHERE h.Rfc = x.Rfc AND h.Articulo = x.Articulo AND h.Listado = x.Listado
+                                AND h.Origen = 'DOF' AND h.CodNotaDOF = x.CodNotaDOF);
+
+            -- Para el estado vigente solo cuenta el movimiento más reciente de cada RFC/artículo/listado.
             ;WITH d AS (
                 SELECT ROW_NUMBER() OVER (PARTITION BY Rfc, Articulo, Listado ORDER BY FechaEfectiva DESC, CodNotaDOF DESC) AS rn
                 FROM #DofStaging)
@@ -562,6 +605,7 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
             CREATE UNIQUE CLUSTERED INDEX IX_DofStaging ON #DofStaging (Rfc, Articulo, Listado);
             """, tx))
             await prepare.ExecuteNonQueryAsync(ct);
+        Sub("c) Historial completo + depuración e índice de #DofStaging");
 
         using (var counts = Command(c, """
             SELECT s.Articulo, s.Listado, COUNT(*) AS Encontrados,
@@ -588,21 +632,6 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
         }
 
         using (var apply = Command(c, """
-            -- Historial idempotente: una fila por RFC/artículo/listado/nota DOF.
-            INSERT INTO dbo.ContribuyenteHistorial (
-                Rfc, RazonSocial, Articulo, Listado, Situacion, FechaEfectiva,
-                TipoEvento, Origen, FechaRegistro, CodNotaDOF, UrlOrigen,
-                NumeroOficioSAT, FechaOficioSAT, NumeroOficioDOF, FechaOficioDOF,
-                EntidadFederativa, Motivo, HashFila)
-            SELECT s.Rfc, s.RazonSocial, s.Articulo, s.Listado, s.Situacion, s.FechaEfectiva,
-                   'Publicacion DOF', 'DOF', SYSDATETIME(), s.CodNotaDOF, s.UrlOrigen,
-                   NULL, NULL, s.NumeroOficioDOF, s.FechaEfectiva,
-                   s.EntidadFederativa, s.Motivo, s.HashFila
-            FROM #DofStaging s
-            WHERE NOT EXISTS (SELECT 1 FROM dbo.ContribuyenteHistorial h
-                              WHERE h.Rfc = s.Rfc AND h.Articulo = s.Articulo AND h.Listado = s.Listado
-                                AND h.Origen = 'DOF' AND h.CodNotaDOF = s.CodNotaDOF);
-
             UPDATE v
             SET RazonSocial = s.RazonSocial, Situacion = s.Situacion, FechaEfectiva = s.FechaEfectiva,
                 OrigenUltimaModificacion = 'DOF', FechaModificacion = SYSDATETIME(),
@@ -626,48 +655,63 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                               WHERE v.Rfc = s.Rfc AND v.Articulo = s.Articulo AND v.Listado = s.Listado);
             """, tx))
             await apply.ExecuteNonQueryAsync(ct);
+        Sub("e) Actualización + inserción de vigentes");
 
         if (notes.Count > 0)
         {
-            // Metadata de publicaciones: una carga bulk y un solo MERGE.
-            using (var createNotes = Command(c, """
-                IF OBJECT_ID('tempdb..#DofNotas') IS NOT NULL DROP TABLE #DofNotas;
-                CREATE TABLE #DofNotas (
-                    CodNota bigint NOT NULL PRIMARY KEY, Titulo nvarchar(1000) COLLATE DATABASE_DEFAULT NOT NULL, FechaPublicacion date NOT NULL,
-                    Edicion varchar(50) COLLATE DATABASE_DEFAULT NULL, Organismo nvarchar(500) COLLATE DATABASE_DEFAULT NULL, Articulo varchar(16) COLLATE DATABASE_DEFAULT NOT NULL,
-                    UrlNota nvarchar(2048) COLLATE DATABASE_DEFAULT NOT NULL, HashArchivo varchar(64) COLLATE DATABASE_DEFAULT NULL, RutaArchivo nvarchar(2048) COLLATE DATABASE_DEFAULT NULL, TotalContribuyentes int NOT NULL);
-                """, tx))
-                await createNotes.ExecuteNonQueryAsync(ct);
-
-            var notesTable = new DataTable();
-            foreach (var (name, type) in new (string, Type)[] { ("CodNota", typeof(long)), ("Titulo", typeof(string)), ("FechaPublicacion", typeof(DateTime)),
-                ("Edicion", typeof(string)), ("Organismo", typeof(string)), ("Articulo", typeof(string)), ("UrlNota", typeof(string)),
-                ("HashArchivo", typeof(string)), ("RutaArchivo", typeof(string)), ("TotalContribuyentes", typeof(int)) })
-                notesTable.Columns.Add(name, type);
+            // Metadata de publicaciones: pocas notas por llamada, se resuelve con un upsert parametrizado por nota
+            // (sin segunda carga bulk ni tabla temporal adicional).
             foreach (var n in notes.GroupBy(x => x.CodNota).Select(g => g.Last()))
-                notesTable.Rows.Add(n.CodNota, n.Titulo.Length > 1000 ? n.Titulo[..1000] : n.Titulo, n.Fecha.ToDateTime(TimeOnly.MinValue),
-                    (object?)n.Edicion ?? DBNull.Value, (object?)n.Organismo ?? DBNull.Value, n.Articulo, n.Url,
-                    (object?)n.Hash ?? DBNull.Value, (object?)n.RutaArchivo ?? DBNull.Value, n.Total);
-
-            using (var bulkNotes = new SqlBulkCopy(c, SqlBulkCopyOptions.Default, tx) { DestinationTableName = "#DofNotas", BulkCopyTimeout = 120 })
             {
-                foreach (DataColumn col in notesTable.Columns) bulkNotes.ColumnMappings.Add(col.ColumnName, col.ColumnName);
-                await bulkNotes.WriteToServerAsync(notesTable, ct);
+                using var pubCmd = Command(c, """
+                    UPDATE dbo.PublicacionDOF WITH (UPDLOCK, HOLDLOCK)
+                    SET Titulo = @Titulo, FechaPublicacion = @FechaPublicacion, Edicion = @Edicion, Organismo = @Organismo, Articulo = @Articulo,
+                        UrlNota = @UrlNota, HashArchivo = @HashArchivo, RutaArchivo = @RutaArchivo, TotalContribuyentes = @Total, FechaRegistro = SYSDATETIME()
+                    WHERE CodNota = @CodNota;
+                    IF @@ROWCOUNT = 0
+                        INSERT INTO dbo.PublicacionDOF (CodNota, Titulo, FechaPublicacion, Edicion, Organismo, Articulo, UrlNota, HashArchivo, RutaArchivo, TotalContribuyentes, FechaRegistro)
+                        VALUES (@CodNota, @Titulo, @FechaPublicacion, @Edicion, @Organismo, @Articulo, @UrlNota, @HashArchivo, @RutaArchivo, @Total, SYSDATETIME());
+                    """, tx);
+                P(pubCmd, "@CodNota", SqlDbType.BigInt, n.CodNota);
+                P(pubCmd, "@Titulo", SqlDbType.NVarChar, n.Titulo.Length > 1000 ? n.Titulo[..1000] : n.Titulo, 1000);
+                P(pubCmd, "@FechaPublicacion", SqlDbType.Date, n.Fecha);
+                P(pubCmd, "@Edicion", SqlDbType.VarChar, (object?)n.Edicion ?? DBNull.Value, 50);
+                P(pubCmd, "@Organismo", SqlDbType.NVarChar, (object?)n.Organismo ?? DBNull.Value, 500);
+                P(pubCmd, "@Articulo", SqlDbType.VarChar, n.Articulo, 16);
+                P(pubCmd, "@UrlNota", SqlDbType.NVarChar, n.Url, 2048);
+                P(pubCmd, "@HashArchivo", SqlDbType.VarChar, (object?)n.Hash ?? DBNull.Value, 64);
+                P(pubCmd, "@RutaArchivo", SqlDbType.NVarChar, (object?)n.RutaArchivo ?? DBNull.Value, 2048);
+                P(pubCmd, "@Total", SqlDbType.Int, n.Total);
+                await pubCmd.ExecuteNonQueryAsync(ct);
             }
-
-            using var merge = Command(c, """
-                MERGE dbo.PublicacionDOF WITH (HOLDLOCK) AS t
-                USING #DofNotas AS s ON t.CodNota = s.CodNota
-                WHEN MATCHED THEN UPDATE SET Titulo = s.Titulo, FechaPublicacion = s.FechaPublicacion, Edicion = s.Edicion, Organismo = s.Organismo,
-                    Articulo = s.Articulo, UrlNota = s.UrlNota, HashArchivo = s.HashArchivo, RutaArchivo = s.RutaArchivo,
-                    TotalContribuyentes = s.TotalContribuyentes, FechaRegistro = SYSDATETIME()
-                WHEN NOT MATCHED THEN INSERT (CodNota, Titulo, FechaPublicacion, Edicion, Organismo, Articulo, UrlNota, HashArchivo, RutaArchivo, TotalContribuyentes, FechaRegistro)
-                    VALUES (s.CodNota, s.Titulo, s.FechaPublicacion, s.Edicion, s.Organismo, s.Articulo, s.UrlNota, s.HashArchivo, s.RutaArchivo, s.TotalContribuyentes, SYSDATETIME());
-                """, tx);
-            await merge.ExecuteNonQueryAsync(ct);
+            Sub($"f) Metadata de {notes.Count} nota(s) en dbo.PublicacionDOF");
         }
 
         return resumen;
+    }
+
+    /// <summary>
+    /// Consulta consolidada (sin historial): una publicación del listado "publicaciones-dof" que ya está cubierta por una
+    /// publicación del SAT del mismo artículo con fecha efectiva igual o más reciente es la misma información; se omite
+    /// y su nota DOF se agrega como referencia a la fila del SAT. Si el DOF es más reciente que el SAT, se conserva.
+    /// </summary>
+    private static List<RfcPublicacionVigente> ColapsarDofDuplicado(List<RfcPublicacionVigente> pubs)
+    {
+        var resultado = new List<RfcPublicacionVigente>(pubs);
+        foreach (var dof in pubs.Where(p => p.Listado == "publicaciones-dof" && p.FechaEfectiva.HasValue))
+        {
+            var sat = resultado.Where(p => p.Listado != "publicaciones-dof" && p.Articulo == dof.Articulo
+                                           && p.FechaEfectiva.HasValue && p.FechaEfectiva >= dof.FechaEfectiva)
+                               .OrderByDescending(p => p.FechaEfectiva).FirstOrDefault();
+            if (sat is null) continue;
+            resultado.Remove(dof);
+            if (sat.CodNotaDOF is null)
+            {
+                var i = resultado.IndexOf(sat);
+                resultado[i] = sat with { CodNotaDOF = dof.CodNotaDOF, UrlOrigenDOF = dof.UrlOrigenDOF, NumeroOficioDOF = sat.NumeroOficioDOF ?? dof.NumeroOficioDOF, FechaOficioDOF = sat.FechaOficioDOF ?? dof.FechaOficioDOF };
+            }
+        }
+        return resultado;
     }
 
     private static byte[] ComputeHashFallback(string rfc, string name, string article, string listing, string status, DateOnly? date, decimal? monto = null, string? motivo = null)
@@ -1199,8 +1243,9 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
 
         foreach (var rfc in normalizedRfcs)
         {
-            if (publicacionesPorRfc.TryGetValue(rfc, out var pubs) && pubs.Count > 0)
+            if (publicacionesPorRfc.TryGetValue(rfc, out var pubsCrudas) && pubsCrudas.Count > 0)
             {
+                var pubs = ColapsarDofDuplicado(pubsCrudas);
                 encontrados++;
                 var arts = pubs.Select(p => p.Articulo).Distinct().OrderBy(a => a).ToArray();
                 var reciente = pubs.Where(p => p.FechaEfectiva.HasValue).MaxBy(p => p.FechaEfectiva);
