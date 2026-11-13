@@ -25,6 +25,8 @@ builder.Services.Configure<BrotliCompressionProviderOptions>(o => o.Level = Comp
 builder.Services.Configure<GzipCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
 builder.Services.AddSingleton<IClock, SystemClock>();
 builder.Services.AddSingleton<SafeDownloader>();
+builder.Services.AddSingleton<MonitorRFC.Infrastructure.Jobs.DofJobQueue>();
+builder.Services.AddHostedService<MonitorRFC.Infrastructure.Jobs.DofJobService>();
 builder.Services.AddScoped<SqlRepository>(s => new SqlRepository(
     builder.Configuration.GetConnectionString("MonitorRFC") ?? "",
     s.GetRequiredService<ILoggerFactory>().CreateLogger<SqlRepository>()));

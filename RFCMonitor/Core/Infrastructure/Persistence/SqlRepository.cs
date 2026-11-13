@@ -1395,7 +1395,8 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
 
     public async Task<DofSyncResponse> SincronizarDofPeriodoAsync(
         DateOnly inicio, DateOnly fin, string? articuloFiltro,
-        SafeDownloader downloader, AgentOptions options, CancellationToken ct)
+        SafeDownloader downloader, AgentOptions options, CancellationToken ct,
+        Func<int, int, string, Task>? onProgress = null)
     {
         const string baseUrl = "https://sidof.segob.gob.mx/dof/sidof";
         var totalDias = fin.DayNumber - inicio.DayNumber + 1;
@@ -1416,6 +1417,7 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
         {
             ct.ThrowIfCancellationRequested();
             diaActual++;
+            if (onProgress is not null) await onProgress(diaActual, totalDias, $"Consultando SIDOF del {fecha:yyyy-MM-dd}; {staging.Rows.Count:N0} fila(s) acumuladas");
             string content;
             try
             {
@@ -1507,6 +1509,7 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
 
         if (totalFilas > 0)
         {
+            if (onProgress is not null) await onProgress(totalDias, totalDias, $"Comparando {totalFilas:N0} fila(s) en SQL Server");
             logger?.LogInformation("[DOF-API 2/4] Comparativa masiva en SQL Server de {Filas:N0} fila(s) y {Notas} nota(s) (carga bulk + sentencias set-based)...", totalFilas, notas.Count);
             await using var c = await OpenAsync(ct);
             await using var tx = (SqlTransaction)await c.BeginTransactionAsync(ct);
@@ -1547,5 +1550,105 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
             DetalleNotas: detalleNotas,
             Advertencias: advertencias
         );
+    }
+
+    // ------------------------------------------------------------------------
+    // Trabajos de sincronización DOF on-demand (estado persistente en dbo.TrabajoDOF)
+    // ------------------------------------------------------------------------
+
+    public async Task EnsureJobTableAsync(CancellationToken ct)
+    {
+        await using var c = await OpenAsync(ct);
+        using var cmd = Command(c, """
+            IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'TrabajoDOF' AND schema_id = SCHEMA_ID('dbo'))
+                CREATE TABLE dbo.TrabajoDOF (
+                    TrabajoId uniqueidentifier NOT NULL PRIMARY KEY,
+                    FechaInicio date NOT NULL, FechaFin date NOT NULL, Articulo varchar(16) NULL,
+                    Estado varchar(20) NOT NULL CHECK (Estado IN ('en_cola', 'en_curso', 'completado', 'error', 'interrumpido')),
+                    DiaActual int NOT NULL DEFAULT 0, TotalDias int NOT NULL DEFAULT 0,
+                    Mensaje nvarchar(1000) NULL, ResultadoJson nvarchar(max) NULL, Error nvarchar(2000) NULL,
+                    FechaCreacion datetime2(3) NOT NULL DEFAULT SYSDATETIME(),
+                    FechaInicioProceso datetime2(3) NULL, FechaTermino datetime2(3) NULL,
+                    FechaActualizacion datetime2(3) NOT NULL DEFAULT SYSDATETIME());
+            """);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>Al arrancar la API, lo que haya quedado en cola o en curso se marca como interrumpido (el proceso anterior terminó).</summary>
+    public async Task<int> MarkInterruptedJobsAsync(CancellationToken ct)
+    {
+        await using var c = await OpenAsync(ct);
+        using var cmd = Command(c, """
+            UPDATE dbo.TrabajoDOF
+            SET Estado = 'interrumpido', FechaTermino = SYSDATETIME(), FechaActualizacion = SYSDATETIME(),
+                Mensaje = N'La API se reinició antes de terminar; vuelva a lanzar el mismo rango (los datos ya guardados no se duplican).'
+            WHERE Estado IN ('en_cola', 'en_curso');
+            """);
+        return await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    public async Task CreateJobAsync(Guid id, DateOnly inicio, DateOnly fin, string? articulo, int totalDias, CancellationToken ct)
+    {
+        await using var c = await OpenAsync(ct);
+        using var cmd = Command(c, """
+            INSERT dbo.TrabajoDOF(TrabajoId, FechaInicio, FechaFin, Articulo, Estado, TotalDias, Mensaje)
+            VALUES(@Id, @Inicio, @Fin, @Articulo, 'en_cola', @Total, N'En cola.');
+            """);
+        P(cmd, "@Id", SqlDbType.UniqueIdentifier, id);
+        P(cmd, "@Inicio", SqlDbType.Date, inicio);
+        P(cmd, "@Fin", SqlDbType.Date, fin);
+        P(cmd, "@Articulo", SqlDbType.VarChar, articulo, 16);
+        P(cmd, "@Total", SqlDbType.Int, totalDias);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    public async Task UpdateJobAsync(Guid id, string estado, int dia, int total, string? mensaje, string? resultadoJson, string? error, CancellationToken ct)
+    {
+        await using var c = await OpenAsync(ct);
+        using var cmd = Command(c, """
+            UPDATE dbo.TrabajoDOF
+            SET Estado = @Estado, DiaActual = @Dia, TotalDias = @Total, Mensaje = @Mensaje,
+                ResultadoJson = COALESCE(@Resultado, ResultadoJson), Error = @Error,
+                FechaInicioProceso = CASE WHEN @Estado = 'en_curso' AND FechaInicioProceso IS NULL THEN SYSDATETIME() ELSE FechaInicioProceso END,
+                FechaTermino = CASE WHEN @Estado IN ('completado', 'error', 'interrumpido') THEN SYSDATETIME() ELSE FechaTermino END,
+                FechaActualizacion = SYSDATETIME()
+            WHERE TrabajoId = @Id;
+            """);
+        P(cmd, "@Id", SqlDbType.UniqueIdentifier, id);
+        P(cmd, "@Estado", SqlDbType.VarChar, estado, 20);
+        P(cmd, "@Dia", SqlDbType.Int, dia);
+        P(cmd, "@Total", SqlDbType.Int, total);
+        P(cmd, "@Mensaje", SqlDbType.NVarChar, mensaje is { Length: > 1000 } ? mensaje[..1000] : mensaje, 1000);
+        P(cmd, "@Resultado", SqlDbType.NVarChar, resultadoJson, -1);
+        P(cmd, "@Error", SqlDbType.NVarChar, error is { Length: > 2000 } ? error[..2000] : error, 2000);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    public async Task<DofJobStatus?> GetJobAsync(Guid id, CancellationToken ct)
+    {
+        await using var c = await OpenAsync(ct);
+        using var cmd = Command(c, """
+            SELECT TrabajoId, Estado, FechaInicio, FechaFin, Articulo, DiaActual, TotalDias, Mensaje, Error, ResultadoJson,
+                   FechaCreacion, FechaInicioProceso, FechaTermino
+            FROM dbo.TrabajoDOF WHERE TrabajoId = @Id;
+            """);
+        P(cmd, "@Id", SqlDbType.UniqueIdentifier, id);
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        if (!await r.ReadAsync(ct)) return null;
+
+        var estado = r.GetString(1);
+        var dia = r.GetInt32(5);
+        var total = r.GetInt32(6);
+        var porcentaje = estado == "completado" ? 100 : total <= 0 ? 0 : Math.Min(99, (int)Math.Round(100.0 * Math.Max(0, dia - 1) / total));
+        DofSyncResponse? resultado = null;
+        if (!r.IsDBNull(9))
+        {
+            try { resultado = JsonSerializer.Deserialize<DofSyncResponse>(r.GetString(9), Json); }
+            catch (JsonException ex) { logger?.LogWarning(ex, "No se pudo leer el resultado guardado del trabajo DOF {Id}", id); }
+        }
+        DateTimeOffset? Local(int i) => r.IsDBNull(i) ? null : new DateTimeOffset(DateTime.SpecifyKind(r.GetDateTime(i), DateTimeKind.Local));
+        return new DofJobStatus(r.GetGuid(0), estado, DateOnly.FromDateTime(r.GetDateTime(2)), DateOnly.FromDateTime(r.GetDateTime(3)),
+            GetString(r, 4), dia, total, porcentaje, GetString(r, 7), GetString(r, 8),
+            Local(10)!.Value, Local(11), Local(12), resultado);
     }
 }

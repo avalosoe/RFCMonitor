@@ -58,6 +58,7 @@ DROP TABLE IF EXISTS dbo.ContribuyenteVigente;
 DROP TABLE IF EXISTS dbo.PublicacionDOF;
 DROP TABLE IF EXISTS dbo.ControlFuenteSAT;
 DROP TABLE IF EXISTS dbo.ControlCoberturaDOF;
+DROP TABLE IF EXISTS dbo.TrabajoDOF;
 DROP TABLE IF EXISTS dbo.NotaPendienteDOF;
 DROP TABLE IF EXISTS dbo.AdjuntoDOF;
 DROP TABLE IF EXISTS dbo.DocumentoTecnico69;

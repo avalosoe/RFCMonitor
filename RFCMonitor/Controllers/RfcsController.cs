@@ -3,13 +3,14 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using MonitorRFC.Application;
 using MonitorRFC.Domain;
+using MonitorRFC.Infrastructure.Jobs;
 using MonitorRFC.Infrastructure.Persistence;
 using MonitorRFC.Infrastructure.Sources;
 
 namespace MonitorRFC.Controllers;
 
 [ApiController]
-public sealed class RfcsController(IRfcQueryService queries, SqlRepository repository, SafeDownloader downloader, IClock clock) : ControllerBase
+public sealed class RfcsController(IRfcQueryService queries, SqlRepository repository, SafeDownloader downloader, IClock clock, DofJobQueue queue) : ControllerBase
 {
     [HttpGet("api/v1/articulos")]
     public IActionResult Articles() => Ok(SourceCatalog.Articles);
@@ -122,6 +123,7 @@ public sealed class RfcsController(IRfcQueryService queries, SqlRepository repos
         [FromQuery] string? fechaInicio = null,
         [FromQuery] string? fechaFin = null,
         [FromQuery] string? articulo = null,
+        [FromQuery] bool esperar = false,
         CancellationToken ct = default)
     {
         var inicioStr = body?.FechaInicio ?? fechaInicio;
@@ -143,47 +145,47 @@ public sealed class RfcsController(IRfcQueryService queries, SqlRepository repos
         if (!string.IsNullOrWhiteSpace(artStr) && !SourceCatalog.Articles.Contains(artStr))
             return Problem(statusCode: 400, title: $"Artículo '{artStr}' inválido o no reconocido.");
 
-        var configured = HttpContext.RequestServices.GetService<IConfiguration>()?["Api:DataDirectory"];
-        var options = new Contracts.AgentOptions { DataDirectory = ResolveWritableDataDirectory(configured) };
-
-        try
+        if (esperar)
         {
-            var response = await repository.SincronizarDofPeriodoAsync(inicioDate, finDate, artStr, downloader, options, ct);
-            return Ok(response);
-        }
-        catch (InvalidOperationException ex) when (ex.Message.StartsWith("Hay otra ingesta"))
-        {
-            return Problem(statusCode: 409, title: ex.Message);
-        }
-    }
-
-    /// <summary>
-    /// La API es independiente del Worker: nunca usa carpetas del servicio. Guarda su evidencia DOF en
-    /// "Api:DataDirectory" (si se configura) o en "data" junto a la API, con respaldo en la carpeta temporal.
-    /// Se prueba escritura real (no solo CreateDirectory).
-    /// </summary>
-    private static string ResolveWritableDataDirectory(string? configured)
-    {
-        var candidates = new[]
-        {
-            string.IsNullOrWhiteSpace(configured) ? Path.Combine(AppContext.BaseDirectory, "data") : configured,
-            Path.Combine(AppContext.BaseDirectory, "data"),
-            Path.Combine(Path.GetTempPath(), "MonitorRFC")
-        };
-        foreach (var dir in candidates)
-        {
+            // Modo síncrono (compatibilidad): la petición permanece abierta hasta terminar. No recomendado para rangos largos.
+            var options = new Contracts.AgentOptions { DataDirectory = DofJobService.ResolveWritableDataDirectory(HttpContext.RequestServices.GetService<IConfiguration>()?["Api:DataDirectory"]) };
             try
             {
-                Directory.CreateDirectory(Path.Combine(dir, "evidence"));
-                var probe = Path.Combine(dir, "evidence", Guid.NewGuid().ToString("N") + ".probe");
-                System.IO.File.WriteAllText(probe, "ok");
-                System.IO.File.Delete(probe);
-                return dir;
+                return Ok(await repository.SincronizarDofPeriodoAsync(inicioDate, finDate, artStr, downloader, options, ct));
             }
-            catch { /* probar la siguiente carpeta */ }
+            catch (InvalidOperationException ex) when (ex.Message.StartsWith("Hay otra ingesta"))
+            {
+                return Problem(statusCode: 409, title: ex.Message);
+            }
         }
-        throw new InvalidOperationException("No hay una carpeta con permiso de escritura para guardar la evidencia de DOF.");
+
+        // Modo asíncrono (predeterminado): se registra el trabajo, se encola y se responde de inmediato con el jobId.
+        var id = Guid.NewGuid();
+        var totalDias = finDate.DayNumber - inicioDate.DayNumber + 1;
+        await repository.CreateJobAsync(id, inicioDate, finDate, string.IsNullOrWhiteSpace(artStr) ? null : artStr.Trim().ToLowerInvariant(), totalDias, ct);
+        await queue.EnqueueAsync(new DofJobRequest(id, inicioDate, finDate, string.IsNullOrWhiteSpace(artStr) ? null : artStr), CancellationToken.None);
+        var consulta = $"/api/v1/dof/sincronizar/{id}";
+        Response.Headers.Location = consulta;
+        return Accepted(consulta, new
+        {
+            trabajoId = id,
+            estado = "en_cola",
+            periodo = new { fechaInicio = inicioDate.ToString("yyyy-MM-dd"), fechaFin = finDate.ToString("yyyy-MM-dd") },
+            filtroArticulo = artStr,
+            totalDias,
+            consultarEstadoEn = consulta
+        });
     }
+
+    /// <summary>Estado y avance de un trabajo de sincronización DOF; al completarse incluye el mismo resumen que el modo síncrono.</summary>
+    [HttpGet("api/v1/dof/sincronizar/{trabajoId:guid}")]
+    [HttpGet("api/v1/dof/descargar/{trabajoId:guid}")]
+    public async Task<IActionResult> SyncDofStatus(Guid trabajoId, CancellationToken ct)
+    {
+        var job = await repository.GetJobAsync(trabajoId, ct);
+        return job is null ? Problem(statusCode: 404, title: "Trabajo no encontrado.") : Ok(job);
+    }
+
 
     // ------------------------------------------------------------------------
     // Endpoints Heredados y de Compatibilidad Retroactiva

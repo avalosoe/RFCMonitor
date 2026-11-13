@@ -326,3 +326,21 @@ public sealed record DofSyncResponse(
     IReadOnlyList<string>? Advertencias = null
 );
 
+
+/// <summary>Estado de un trabajo de sincronización DOF on-demand (consultable por jobId).</summary>
+public sealed record DofJobStatus(
+    Guid TrabajoId,
+    string Estado,
+    DateOnly FechaInicio,
+    DateOnly FechaFin,
+    string? FiltroArticulo,
+    int DiaActual,
+    int TotalDias,
+    int PorcentajeAvance,
+    string? Mensaje,
+    string? Error,
+    DateTimeOffset FechaCreacion,
+    DateTimeOffset? FechaInicioProceso,
+    DateTimeOffset? FechaTermino,
+    DofSyncResponse? Resultado
+);
