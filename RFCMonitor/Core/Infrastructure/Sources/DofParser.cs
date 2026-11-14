@@ -24,6 +24,8 @@ public static partial class DofParser
         if(Article49().IsMatch(text)) return "49-bis";
         return Article69().IsMatch(text) ? "69":null;
     }
+    private static bool LooksLikeRfc(string value) =>
+        value.Length is >= 8 and <= 20 && value.All(char.IsLetterOrDigit) && value.Any(char.IsLetter) && value.Any(char.IsDigit);
     private static string Text(HtmlNode node) => Regex.Replace(HtmlEntity.DeEntitize(node.InnerText),"\\s+"," ").Trim();
     private static string Status(string context, string article)
     {
@@ -81,19 +83,22 @@ public static partial class DofParser
 
                 if (rfcColumn >= 0 && rfcColumn < cells.Length && !string.IsNullOrWhiteSpace(cells[rfcColumn]))
                 {
-                    rfcVal = Rfc.Normalize(cells[rfcColumn]);
-                    rfcIdx = rfcColumn;
+                    var candidate = Rfc.Normalize(cells[rfcColumn]);
+                    // Con encabezado RFC se admiten identificadores atípicos, pero nunca fechas ni textos con separadores.
+                    if (LooksLikeRfc(candidate))
+                    {
+                        rfcVal = candidate;
+                        rfcIdx = rfcColumn;
+                    }
                 }
                 else
                 {
-                    var matches = cells.Select((cell, index) => (Rfc: Regex.Replace(cell, "\\s+", "").ToUpperInvariant(), Index: index))
-                        .Where(c => !string.IsNullOrWhiteSpace(c.Rfc) && (Rfc.IsStrictRfc(c.Rfc) || (c.Rfc.Length >= 8 && c.Rfc.Length <= 50 && char.IsLetterOrDigit(c.Rfc[0]))))
-                        .ToArray();
-
-                    if (matches.Length > 0)
+                    // Sin encabezado RFC solo se acepta un RFC con formato estricto; de lo contrario la tabla
+                    // (p. ej. proveedores extranjeros con fecha y razón social) no corresponde a un listado de RFC.
+                    var m = cells.Select((cell, index) => (Rfc: Regex.Replace(cell, "\\s+", "").ToUpperInvariant(), Index: index))
+                        .FirstOrDefault(c => Rfc.IsStrictRfc(c.Rfc));
+                    if (!string.IsNullOrEmpty(m.Rfc))
                     {
-                        var m = matches.FirstOrDefault(c => Rfc.IsStrictRfc(c.Rfc));
-                        if (string.IsNullOrEmpty(m.Rfc)) m = matches[0];
                         rfcVal = Rfc.Normalize(m.Rfc);
                         rfcIdx = m.Index;
                     }

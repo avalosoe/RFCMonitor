@@ -1103,3 +1103,227 @@ BEGIN
     SELECT CAST(1 AS bigint) AS GeneracionId;
 END;
 GO
+
+-- ============================================================================
+-- 12. Objetos para endpoints de compatibilidad con el proyecto legado (RfcStatusApi)
+--     POST /api/Rfc/Edos-Efos, GET /api/EdosEfos/all, GET /api/EdosEfos/all69
+-- ----------------------------------------------------------------------------
+-- Objetos NUEVOS e independientes (prefijo Legacy): no modifican vistas, funciones
+-- ni procedimientos existentes. Convenciones:
+--   * Un solo registro por RFC; el "principal" es el de 69-b / 69-b-bis (si existe),
+--     luego el de fecha efectiva más reciente, prefiriendo el SAT sobre publicaciones-dof.
+--   * Fechas como texto dd/MM/yyyy (formato de las publicaciones del SAT).
+-- ============================================================================
+
+-- Detalle por registro vigente con columnas por etapa (Presunción/Desvirtuados/Definitivos/Favorables)
+-- y ranking del registro principal por RFC (Rn = 1).
+CREATE OR ALTER VIEW dbo.vw_LegacyRfcDetalle
+AS
+WITH B AS (
+    SELECT
+        v.ContribuyenteId, v.Rfc, v.RazonSocial, v.Articulo, v.Listado, v.Situacion, v.FechaEfectiva,
+        EsEfos = CASE WHEN v.Articulo IN ('69-b', '69-b-bis') THEN 1 ELSE 0 END,
+        Etapa  = CASE WHEN v.Articulo NOT IN ('69-b', '69-b-bis') THEN NULL
+                      WHEN v.Situacion LIKE N'%efinitiv%' THEN 'D'
+                      WHEN v.Situacion LIKE N'%resunt%'   THEN 'P'
+                      WHEN v.Situacion LIKE N'%esvirtu%'  THEN 'V'
+                      WHEN v.Situacion LIKE N'%entencia%' THEN 'F' END,
+        NumeroOficioSAT = NULLIF(v.NumeroOficioSAT, N''), FechaOficioSAT = v.FechaOficioSAT,
+        NumeroOficioDOF = NULLIF(v.NumeroOficioDOF, N''), FechaOficioDOF = v.FechaOficioDOF,
+        PresOfSAT = NULLIF(v.PresuncionOficioSAT, N''),   PresFSAT = v.PresuncionFechaSAT,
+        PresOfDOF = NULLIF(v.PresuncionOficioDOF, N''),   PresFDOF = v.PresuncionFechaDOF,
+        DesvOfSAT = NULLIF(v.DesvirtuadoOficioSAT, N''),  DesvFSAT = v.DesvirtuadoFechaSAT,
+        DesvOfDOF = NULLIF(v.DesvirtuadoOficioDOF, N''),  DesvFDOF = v.DesvirtuadoFechaDOF,
+        DefOfSAT  = NULLIF(v.DefinitivoOficioSAT, N''),   DefFSAT  = v.DefinitivoFechaSAT,
+        DefOfDOF  = NULLIF(v.DefinitivoOficioDOF, N''),   DefFDOF  = v.DefinitivoFechaDOF,
+        SentOfSAT = NULLIF(v.SentenciaOficioSAT, N''),    SentFSAT = v.SentenciaFechaSAT,
+        SentOfDOF = NULLIF(v.SentenciaOficioDOF, N''),    SentFDOF = v.SentenciaFechaDOF
+    FROM dbo.ContribuyenteVigente v
+), S AS (
+    SELECT B.*,
+        folioPresuncionSAT          = COALESCE(PresOfSAT, CASE WHEN Etapa = 'P' THEN NumeroOficioSAT END),
+        publicacionSATPresuncion    = COALESCE(CONVERT(varchar(10), PresFSAT, 103), CASE WHEN Etapa = 'P' THEN CONVERT(varchar(10), FechaOficioSAT, 103) END),
+        folioPresuncionDOF          = COALESCE(PresOfDOF, CASE WHEN Etapa = 'P' THEN NumeroOficioDOF END),
+        publicacionDOFPresuncion    = COALESCE(CONVERT(varchar(10), PresFDOF, 103), CASE WHEN Etapa = 'P' THEN CONVERT(varchar(10), FechaOficioDOF, 103) END),
+        folioDesvirtuadosSAT        = COALESCE(DesvOfSAT, CASE WHEN Etapa = 'V' THEN NumeroOficioSAT END),
+        publicacionSATDesvirtuados  = COALESCE(CONVERT(varchar(10), DesvFSAT, 103), CASE WHEN Etapa = 'V' THEN CONVERT(varchar(10), FechaOficioSAT, 103) END),
+        folioDesvirtuadosDOF        = COALESCE(DesvOfDOF, CASE WHEN Etapa = 'V' THEN NumeroOficioDOF END),
+        publicacionDOFDesvirtuados  = COALESCE(CONVERT(varchar(10), DesvFDOF, 103), CASE WHEN Etapa = 'V' THEN CONVERT(varchar(10), FechaOficioDOF, 103) END),
+        folioDefinitivosSAT         = COALESCE(DefOfSAT, CASE WHEN Etapa = 'D' THEN NumeroOficioSAT END),
+        publicacionSATDefinitivos   = COALESCE(CONVERT(varchar(10), DefFSAT, 103), CASE WHEN Etapa = 'D' THEN CONVERT(varchar(10), FechaOficioSAT, 103) END),
+        folioDefinitivosDOF         = COALESCE(DefOfDOF, CASE WHEN Etapa = 'D' THEN NumeroOficioDOF END),
+        publicacionDOFDefinitivos   = COALESCE(CONVERT(varchar(10), DefFDOF, 103), CASE WHEN Etapa = 'D' THEN CONVERT(varchar(10), FechaOficioDOF, 103) END),
+        folioFavorablesSAT          = COALESCE(SentOfSAT, CASE WHEN Etapa = 'F' THEN NumeroOficioSAT END),
+        publicacionSATFavorables    = COALESCE(CONVERT(varchar(10), SentFSAT, 103), CASE WHEN Etapa = 'F' THEN CONVERT(varchar(10), FechaOficioSAT, 103) END),
+        folioFavorablesDOF          = COALESCE(SentOfDOF, CASE WHEN Etapa = 'F' THEN NumeroOficioDOF END),
+        publicacionDOFFavorables    = COALESCE(CONVERT(varchar(10), SentFDOF, 103), CASE WHEN Etapa = 'F' THEN CONVERT(varchar(10), FechaOficioDOF, 103) END)
+    FROM B
+)
+SELECT S.*,
+    NumeroFechaOficioSAT = CASE Etapa WHEN 'P' THEN folioPresuncionSAT WHEN 'V' THEN folioDesvirtuadosSAT WHEN 'D' THEN folioDefinitivosSAT WHEN 'F' THEN folioFavorablesSAT ELSE NumeroOficioSAT END,
+    PublicacionPaginaSAT = CASE Etapa WHEN 'P' THEN publicacionSATPresuncion WHEN 'V' THEN publicacionSATDesvirtuados WHEN 'D' THEN publicacionSATDefinitivos WHEN 'F' THEN publicacionSATFavorables ELSE CONVERT(varchar(10), FechaOficioSAT, 103) END,
+    NumeroFechaOficioGlobal = CASE Etapa WHEN 'P' THEN folioPresuncionDOF WHEN 'V' THEN folioDesvirtuadosDOF WHEN 'D' THEN folioDefinitivosDOF WHEN 'F' THEN folioFavorablesDOF ELSE NumeroOficioDOF END,
+    PublicacionDOF = CASE Etapa WHEN 'P' THEN publicacionDOFPresuncion WHEN 'V' THEN publicacionDOFDesvirtuados WHEN 'D' THEN publicacionDOFDefinitivos WHEN 'F' THEN publicacionDOFFavorables ELSE CONVERT(varchar(10), FechaOficioDOF, 103) END,
+    Rn = ROW_NUMBER() OVER (
+        PARTITION BY Rfc
+        ORDER BY (1 - EsEfos),
+                 CASE WHEN FechaEfectiva IS NULL THEN 1 ELSE 0 END,
+                 FechaEfectiva DESC,
+                 CASE WHEN Listado = 'publicaciones-dof' THEN 1 ELSE 0 END,
+                 ContribuyenteId DESC)
+FROM S;
+GO
+
+-- Un renglón por RFC con los artículos en que aparece, concatenados:
+-- "69-b, 69 (Cancelados), 49-bis" o "69 (Cancelados, Exigibles)". El artículo 69 lleva entre paréntesis sus listados del SAT
+-- siempre que el RFC aparezca en al menos un listado del SAT del 69 (uno o varios).
+CREATE OR ALTER VIEW dbo.vw_LegacyRfcArticulos
+AS
+WITH L AS (
+    SELECT DISTINCT v.Rfc, v.Articulo, v.Listado FROM dbo.ContribuyenteVigente v
+), N AS (
+    SELECT l.Rfc, l.Articulo,
+           NombreListados = STRING_AGG(CAST(COALESCE(c.Nombre, l.Listado) AS nvarchar(max)), N', ') WITHIN GROUP (ORDER BY COALESCE(c.Nombre, l.Listado)),
+           TotalListados  = COUNT(*)
+    FROM L l
+    LEFT JOIN dbo.ControlFuenteSAT c ON c.Articulo = l.Articulo AND c.Listado = l.Listado AND c.EsDocumento = 0
+    WHERE l.Listado <> 'publicaciones-dof'
+    GROUP BY l.Rfc, l.Articulo
+), A AS (
+    SELECT l.Rfc, l.Articulo,
+           Orden = CASE l.Articulo WHEN '69-b' THEN 1 WHEN '69-b-bis' THEN 2 WHEN '69' THEN 3 ELSE 4 END
+    FROM L l
+    GROUP BY l.Rfc, l.Articulo
+)
+SELECT a.Rfc,
+       Articulo = STRING_AGG(CAST(CASE WHEN a.Articulo = '69' AND n.NombreListados IS NOT NULL
+                                       THEN a.Articulo + N' (' + n.NombreListados + N')'
+                                       ELSE a.Articulo END AS nvarchar(max)), N', ') WITHIN GROUP (ORDER BY a.Orden)
+FROM A a
+LEFT JOIN N n ON n.Rfc = a.Rfc AND n.Articulo = a.Articulo
+GROUP BY a.Rfc;
+GO
+
+-- No localizados (art. 69): primera publicación y entidad por RFC.
+CREATE OR ALTER VIEW dbo.vw_LegacyNoLocalizados
+AS
+SELECT v.Rfc,
+       FechaPrimeraPublicacion = MIN(v.FechaEfectiva),
+       EntidadFederativa       = MAX(v.EntidadFederativa)
+FROM dbo.ContribuyenteVigente v
+WHERE v.Articulo = '69' AND v.Listado = 'no-localizados'
+GROUP BY v.Rfc;
+GO
+
+-- Una fila con los metadatos de las fuentes (SAT 69-b y no localizados) para los encabezados.
+CREATE OR ALTER VIEW dbo.vw_LegacyInfoFuentes
+AS
+SELECT
+    FechaPortal69b      = (SELECT MAX(c.FechaPublicacionPortal) FROM dbo.ControlFuenteSAT c WHERE c.Articulo = '69-b' AND c.EsDocumento = 0),
+    UltimaDescarga69b   = (SELECT MAX(c.UltimaDescargaExitosa)  FROM dbo.ControlFuenteSAT c WHERE c.Articulo = '69-b' AND c.EsDocumento = 0),
+    UltimoIntento69b    = (SELECT MAX(c.UltimoIntento) FROM dbo.ControlFuenteSAT c WHERE c.Articulo = '69-b' AND c.EsDocumento = 0),
+    FechaPortalNL       = (SELECT MAX(c.FechaPublicacionPortal) FROM dbo.ControlFuenteSAT c WHERE c.Articulo = '69' AND c.Listado = 'no-localizados'),
+    UltimaDescargaNL    = (SELECT MAX(c.UltimaDescargaExitosa)  FROM dbo.ControlFuenteSAT c WHERE c.Articulo = '69' AND c.Listado = 'no-localizados'),
+    UltimoIntentoNL     = (SELECT MAX(c.UltimoIntento) FROM dbo.ControlFuenteSAT c WHERE c.Articulo = '69' AND c.Listado = 'no-localizados'),
+    FechaPortalBis      = (SELECT MAX(c.FechaPublicacionPortal) FROM dbo.ControlFuenteSAT c WHERE c.Articulo = '69-b-bis' AND c.EsDocumento = 0),
+    UltimaDescargaBis   = (SELECT MAX(c.UltimaDescargaExitosa)  FROM dbo.ControlFuenteSAT c WHERE c.Articulo = '69-b-bis' AND c.EsDocumento = 0),
+    UltimoIntentoBis    = (SELECT MAX(c.UltimoIntento) FROM dbo.ControlFuenteSAT c WHERE c.Articulo = '69-b-bis' AND c.EsDocumento = 0);
+GO
+
+-- POST /api/Rfc/Edos-Efos: consulta por RFC (sin duplicados). 1er resultado: metadatos; 2do: datos.
+CREATE OR ALTER PROCEDURE dbo.PA_Legacy_EdosEfos_Consultar
+    @Rfcs dbo.RfcInput READONLY
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT FechaPortal69b, UltimaDescarga69b, UltimoIntento69b, FechaPortalNL, UltimaDescargaNL, UltimoIntentoNL, FechaPortalBis, UltimaDescargaBis, UltimoIntentoBis FROM dbo.vw_LegacyInfoFuentes;
+
+    SELECT
+        d.Rfc                                   AS rfc,
+        d.RazonSocial                           AS nombreContribuyente,
+        d.Situacion                             AS estatus,
+        d.NumeroFechaOficioSAT                  AS numeroFechaOficioSAT,
+        d.PublicacionPaginaSAT                  AS publicacionPaginaSAT,
+        d.NumeroFechaOficioGlobal               AS numeroFechaOficioGlobal,
+        d.PublicacionDOF                        AS publicacionDOF,
+        a.Articulo                              AS articulo
+    FROM @Rfcs r
+    JOIN dbo.vw_LegacyRfcDetalle d ON d.Rfc = r.Rfc AND d.Rn = 1
+    JOIN dbo.vw_LegacyRfcArticulos a ON a.Rfc = r.Rfc
+    ORDER BY r.OrdenEntrada
+    OPTION (RECOMPILE);
+END;
+GO
+
+-- GET /api/EdosEfos/all: todo lo correspondiente al 69-B / 69-B Bis, sin paginación.
+-- Resultados: 1) metadatos, 2) total, 3) datos.
+CREATE OR ALTER PROCEDURE dbo.PA_Legacy_EdosEfos_All
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT FechaPortal69b, UltimaDescarga69b, UltimoIntento69b, FechaPortalNL, UltimaDescargaNL, UltimoIntentoNL, FechaPortalBis, UltimaDescargaBis, UltimoIntentoBis FROM dbo.vw_LegacyInfoFuentes;
+
+    SELECT d.Rfc, d.RazonSocial, d.Situacion,
+           d.folioPresuncionSAT, d.publicacionSATPresuncion, d.folioPresuncionDOF, d.publicacionDOFPresuncion,
+           d.folioDesvirtuadosSAT, d.publicacionSATDesvirtuados, d.folioDesvirtuadosDOF, d.publicacionDOFDesvirtuados,
+           d.folioDefinitivosSAT, d.publicacionSATDefinitivos, d.folioDefinitivosDOF, d.publicacionDOFDefinitivos,
+           d.folioFavorablesSAT, d.publicacionSATFavorables, d.folioFavorablesDOF, d.publicacionDOFFavorables
+    INTO #Todos
+    FROM dbo.vw_LegacyRfcDetalle d
+    WHERE d.EsEfos = 1 AND d.Rn = 1;
+
+    SELECT COUNT_BIG(*) AS TotalRegistros FROM #Todos;
+    SELECT * FROM #Todos ORDER BY Rfc COLLATE Latin1_General_100_BIN2;
+END;
+GO
+
+-- GET /api/EdosEfos/all69: todos los RFC de todos los artículos, paginado por número de página.
+-- Resultados: 1) metadatos, 2) total del universo filtrado, 3) datos de la página.
+CREATE OR ALTER PROCEDURE dbo.PA_Legacy_EdosEfos_All69
+    @Pagina int = 1,
+    @TamanoPagina int = 10000,
+    @Articulo varchar(16) = NULL,
+    @Listado varchar(100) = NULL,
+    @Situacion nvarchar(200) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF @Pagina < 1
+        THROW 50002, '@Pagina debe ser mayor o igual a 1.', 1;
+    IF @TamanoPagina NOT BETWEEN 1 AND 10000
+        THROW 50003, '@TamanoPagina debe estar entre 1 y 10000.', 1;
+    DECLARE @Omitir bigint = (CONVERT(bigint, @Pagina) - 1) * @TamanoPagina;
+
+    SELECT FechaPortal69b, UltimaDescarga69b, UltimoIntento69b, FechaPortalNL, UltimaDescargaNL, UltimoIntentoNL, FechaPortalBis, UltimaDescargaBis, UltimoIntentoBis FROM dbo.vw_LegacyInfoFuentes;
+
+    SELECT COUNT_BIG(*) AS TotalRegistros
+    FROM dbo.vw_LegacyRfcDetalle d
+    WHERE d.Rn = 1
+      AND (@Articulo IS NULL OR EXISTS (
+          SELECT 1 FROM dbo.ContribuyenteVigente f
+          WHERE f.Rfc = d.Rfc AND f.Articulo = @Articulo AND f.Listado = @Listado
+            AND (@Situacion IS NULL OR f.Situacion LIKE '%' + @Situacion + '%')));
+
+    SELECT d.Rfc, d.RazonSocial, d.Situacion,
+           d.folioPresuncionSAT, d.publicacionSATPresuncion, d.folioPresuncionDOF, d.publicacionDOFPresuncion,
+           d.folioDesvirtuadosSAT, d.publicacionSATDesvirtuados, d.folioDesvirtuadosDOF, d.publicacionDOFDesvirtuados,
+           d.folioDefinitivosSAT, d.publicacionSATDefinitivos, d.folioDefinitivosDOF, d.publicacionDOFDefinitivos,
+           d.folioFavorablesSAT, d.publicacionSATFavorables, d.folioFavorablesDOF, d.publicacionDOFFavorables,
+           CONVERT(varchar(10), nl.FechaPrimeraPublicacion, 103) AS fechaPrimeraPublicacion_nl,
+           nl.EntidadFederativa AS entidadFederativa_nl,
+           CAST(CASE WHEN nl.Rfc IS NULL THEN 0 ELSE 1 END AS bit) AS enListado69NL,
+           a.Articulo AS articulo
+    FROM dbo.vw_LegacyRfcDetalle d
+    JOIN dbo.vw_LegacyRfcArticulos a ON a.Rfc = d.Rfc
+    LEFT JOIN dbo.vw_LegacyNoLocalizados nl ON nl.Rfc = d.Rfc
+    WHERE d.Rn = 1
+      AND (@Articulo IS NULL OR EXISTS (
+          SELECT 1 FROM dbo.ContribuyenteVigente f
+          WHERE f.Rfc = d.Rfc AND f.Articulo = @Articulo AND f.Listado = @Listado
+            AND (@Situacion IS NULL OR f.Situacion LIKE '%' + @Situacion + '%')))
+    ORDER BY d.Rfc COLLATE Latin1_General_100_BIN2
+    OFFSET @Omitir ROWS FETCH NEXT @TamanoPagina ROWS ONLY;
+END;
+GO

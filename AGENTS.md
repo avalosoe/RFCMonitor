@@ -99,10 +99,18 @@ A continuación se documenta el catálogo completo de endpoints expuestos por la
 Se mantienen para garantizar compatibilidad con consumidores de las aplicaciones anteriores (`EdosSatScraper` y `RfcStatusApi`):
 | Método | Ruta | Mapeo / Equivalente | Formato de Entrada |
 | :--- | :--- | :--- | :--- |
-| `GET` | `/api/EdosEfos/all69` | `GET /api/v1/rfcs` | Query opcional: `incluirHistorial`. |
+| `GET` | `/api/v1/rfcs` | Consulta consolidada (el alias `/api/EdosEfos/all69` ahora es el endpoint legado de la sección 4.7). | Query opcional: `incluirHistorial`. |
 | `POST` | `/api/Rfc/Listado69` | `POST /api/v1/rfcs/consultar` o `/api/v1/rfcs/estado` | Body JSON: `{ "rfcs": ["RFC1", "RFC2"] }` o array directo.<br>Query opcional: `incluirHistorial`. |
 
 ---
+### 4.7. Endpoints de Compatibilidad Legado (RfcStatusApi)
+Respuestas con la forma exacta del proyecto legado, respaldadas por objetos SQL **nuevos** (`dbo.PA_Legacy_*`, `dbo.vw_Legacy*`; scripts en `bootstrap.sql`/`reset.sql`), independientes de los procedimientos de la API v1. Un solo registro por RFC; el registro principal es el de 69-b/69-b-bis (si existe) y, después, el de fecha efectiva más reciente (SAT sobre `publicaciones-dof`). Fechas de oficios/publicaciones como texto `dd/MM/yyyy`; metadatos de fuente: `ultimaPublicacion` = última descarga exitosa, `informacionActualizadaAl` = fecha del portal SAT, `ultimaConsulta` = último intento. Sólo `all69` se pagina: por omisión y máximo devuelve 10,000 filas, e informa página, rango, total y siguiente página.
+| Método | Ruta | Descripción | Parámetros / Body |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/Rfc/Edos-Efos` | Consulta por RFC. Responde `{ success, message, resultado: { informacionConsulta: { ultimaPublicacion, informacionActualizadaAl, encabezado, ultimaConsulta }, data: [ { rfc, nombreContribuyente, estatus, numeroFechaOficioSAT, publicacionPaginaSAT, numeroFechaOficioGlobal, publicacionDOF, articulo } ] } }`. Sin duplicados: `articulo` concatena los artículos donde aparece (`69-b, 69 (Cancelados, Exigibles), 49-bis`); el artículo 69 siempre lleva entre paréntesis el nombre de sus listados, aunque sea solo uno (`69 (Cancelados)`) y aunque lo acompañen otros artículos; si solo aparece por publicaciones DOF queda como `69`. | Body JSON: `{ "rfcs": ["AAA010101AAA"] }` (también arreglo directo). Se eliminan guiones y espacios. |
+| `GET` | `/api/EdosEfos/all` | Todo lo correspondiente al 69-b / 69-b-bis, sin paginación y en streaming. `resultado.informacionConsulta` (`ultimaPublicacion`, `informacionActualizadaAl`, `encabezado`, `ultimaConsulta`), `data` con `RFC`, `nombreC`, `situacionC` (valor tal cual está en la base, sin conversión a mayúsculas) y las 16 columnas de folio/publicación SAT/DOF por etapa. | Ninguno. |
+| `GET` | `/api/EdosEfos/all69` | Todos los RFC de todos los artículos, paginado y en streaming. `resultado.informacionConsulta69` (los cuatro campos base más sus variantes `NL` y `Bis`) y `data` como `/all` más `fechaPrimeraPublicacion_nl`, `entidadFederativa_nl`, `EnListado69NL` y `articulo` (concatenado como en `Edos-Efos`). El filtro `tipoId` se resuelve contra el catálogo legacy y limita el universo por artículo/listado/situación del tipo. | Query opcional: `pagina` (por omisión 1), `tamanoPagina` (1..10000; por omisión 10000), `tipoId` (catálogo `/api/v1/tipos`). |
+
 
 ## 5. Estructura de la Solución `RFCMonitor`
 

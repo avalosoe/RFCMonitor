@@ -182,28 +182,64 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
             // CASO 1: Documento técnico normativo en Excel (Causas y Motivos Art. 69)
             if (listing?.Document == true)
             {
-                logger?.LogInformation("  [Documento técnico] Limpiando dbo.DocumentoTecnico69 antes de recargar...");
-                using var clearDoc = Command(c, "DELETE FROM dbo.DocumentoTecnico69;", transaction);
-                await WithHeartbeatAsync("DELETE dbo.DocumentoTecnico69", () => clearDoc.ExecuteNonQueryAsync(ct), ct);
-
+                // 1) Leer el documento completo y calcular la huella de su CONTENIDO (celdas en orden). El hash del archivo .xls
+                //    no sirve para detectar cambios: el contenedor Excel puede variar sin que cambie el texto.
                 var cellList = new List<(int Tabla, int Fila, int Columna, string Hoja, string? Valor)>();
+                using var contentHasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
                 await foreach (var row in rows.WithCancellation(ct))
                 {
                     foreach (var cell in row.Original)
                     {
                         var hoja = Convert.ToString(row.Typed.GetValueOrDefault("hoja")) ?? cell.Nombre;
                         cellList.Add((row.Table, row.Row, cell.Columna, hoja, cell.Valor));
+                        contentHasher.AppendData(Encoding.UTF8.GetBytes($"{row.Table}|{row.Row}|{cell.Columna}|{hoja}|{cell.Valor}\n"));
                     }
                 }
-
                 long docCount = cellList.Count;
+                var contentHash = Convert.ToHexString(contentHasher.GetHashAndReset());
+
+                // 2) Comparar contra la huella guardada: si el contenido es idéntico no se recarga ni se reporta como cambio.
+                string? previousHash = null;
+                using (var findHash = Command(c, "SELECT UltimoHashArchivo FROM dbo.ControlFuenteSAT WITH(UPDLOCK,HOLDLOCK) WHERE FuenteClave=@Source;", transaction))
+                {
+                    P(findHash, "@Source", SqlDbType.VarChar, document.SourceKey, 100);
+                    previousHash = (await findHash.ExecuteScalarAsync(ct)) as string;
+                }
+                long storedCells;
+                using (var countCells = Command(c, "SELECT COUNT_BIG(*) FROM dbo.DocumentoTecnico69;", transaction))
+                    storedCells = Convert.ToInt64(await countCells.ExecuteScalarAsync(ct));
+
+                if (docCount > 0 && storedCells == docCount && string.Equals(previousHash?.Trim(), contentHash, StringComparison.OrdinalIgnoreCase))
+                {
+                    logger?.LogInformation("  [Documento técnico] Contenido idéntico al ya cargado ({Count:N0} celdas, huella {Hash}); sin cambios.", docCount, contentHash[..12]);
+                    using var touch = Command(c, """
+                        UPDATE dbo.ControlFuenteSAT
+                        SET UltimoIntento=SYSDATETIME(), UltimaDescargaExitosa=SYSDATETIME(), Resultado='sin-cambios', UltimoError=NULL,
+                            TotalRegistrosVigentes=@Count, TotalNuevos=0, TotalModificados=0, TotalSinCambios=@Count,
+                            FechaPublicacionPortal=COALESCE(@Portal, FechaPublicacionPortal)
+                        WHERE FuenteClave=@Source;
+                        """, transaction);
+                    P(touch, "@Count", SqlDbType.Int, (int)Math.Min(docCount, int.MaxValue));
+                    P(touch, "@Portal", SqlDbType.Date, document.SourceDate);
+                    P(touch, "@Source", SqlDbType.VarChar, document.SourceKey, 100);
+                    await touch.ExecuteNonQueryAsync(ct);
+                    await transaction.CommitAsync(ct);
+                    return new ImportResult(1, false, docCount, docCount, 0, docCount, null, 0, 0, (int)Math.Min(docCount, int.MaxValue));
+                }
+
+                // 3) Hubo cambios reales (o primera carga): reemplazar el contenido.
+                logger?.LogInformation("  [Documento técnico] Contenido distinto (huella anterior {Prev}, nueva {New}); recargando dbo.DocumentoTecnico69...",
+                    previousHash is null ? "ninguna" : previousHash.Trim()[..Math.Min(12, previousHash.Trim().Length)], contentHash[..12]);
+                using var clearDoc = Command(c, "DELETE FROM dbo.DocumentoTecnico69;", transaction);
+                await WithHeartbeatAsync("DELETE dbo.DocumentoTecnico69", () => clearDoc.ExecuteNonQueryAsync(ct), ct);
+
                 logger?.LogInformation("Insertando matriz de celdas en dbo.DocumentoTecnico69 ({Count:N0} celdas)...", docCount);
 
                 const int batchSize = 100;
                 for (int i = 0; i < cellList.Count; i += batchSize)
                 {
                     var chunk = cellList.Skip(i).Take(batchSize).ToList();
-                    var sb = new StringBuilder("INSERT INTO dbo.DocumentoTecnico69 (Tabla, Fila, Columna, Hoja, Valor, FechaRegistro) VALUES ");
+                    var sb = new StringBuilder("INSERT INTO dbo.DocumentoTecnico69 (HojaOrdinal, FilaOrdinal, ColumnaOrdinal, Hoja, Valor, FechaActualizacion) VALUES");
                     using var insertCmd = c.CreateCommand();
                     insertCmd.Transaction = transaction;
                     insertCmd.CommandTimeout = 120;
@@ -226,12 +262,16 @@ public sealed class SqlRepository : IPublicationRepository, IRfcQueryService
                 using var updateSourceDoc = Command(c, """
                     UPDATE dbo.ControlFuenteSAT
                     SET UltimaDescargaExitosa=SYSDATETIME(), UltimoIntento=SYSDATETIME(),
-                        TotalRegistrosVigentes=@Count, TotalSinCambios=@Count, Resultado='sin-cambios', UltimoError=NULL
+                        TotalRegistrosVigentes=@Count, TotalNuevos=0, TotalModificados=@Count, TotalSinCambios=0,
+                        Resultado='cambios', UltimoError=NULL, UltimoHashArchivo=@Hash,
+                        FechaPublicacionPortal=COALESCE(@Portal, FechaPublicacionPortal)
                     WHERE FuenteClave=@Source;
                     IF @@ROWCOUNT=0
-                        INSERT dbo.ControlFuenteSAT(FuenteClave,Articulo,Listado,Nombre,UrlPortal,EsDocumento,Habilitada,TotalRegistrosVigentes,TotalSinCambios,Resultado)
-                        VALUES(@Source,'69','documento-tecnico',N'Documento técnico y normativo',@Url,1,1,@Count,@Count,'sin-cambios');
+                        INSERT dbo.ControlFuenteSAT(FuenteClave,Articulo,Listado,Nombre,UrlPortal,EsDocumento,Habilitada,TotalRegistrosVigentes,TotalModificados,Resultado,UltimoHashArchivo,FechaPublicacionPortal)
+                        VALUES(@Source,'69','documento-tecnico',N'Documento técnico y normativo',@Url,1,1,@Count,@Count,'cambios',@Hash,@Portal);
                     """, transaction);
+                P(updateSourceDoc, "@Hash", SqlDbType.Char, contentHash, 64);
+                P(updateSourceDoc, "@Portal", SqlDbType.Date, document.SourceDate);
                 P(updateSourceDoc, "@Count", SqlDbType.Int, (int)Math.Min(docCount, int.MaxValue));
                 P(updateSourceDoc, "@Source", SqlDbType.VarChar, document.SourceKey, 100);
                 P(updateSourceDoc, "@Url", SqlDbType.NVarChar, document.Url, 2048);

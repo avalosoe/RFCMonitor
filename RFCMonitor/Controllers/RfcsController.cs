@@ -306,7 +306,6 @@ public sealed class RfcsController(IRfcQueryService queries, SqlRepository repos
     // ------------------------------------------------------------------------
 
     [HttpGet("api/v1/rfcs")]
-    [HttpGet("api/EdosEfos/all69")]
     public Task<IActionResult> All(bool incluirHistorial = false, CancellationToken ct = default) => Query(null, null, null, incluirHistorial, ct);
 
     [HttpPost("api/v1/rfcs/consultar")]

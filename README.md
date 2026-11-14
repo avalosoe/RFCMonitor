@@ -52,7 +52,7 @@ La API sólo lee la última generación publicada. Devuelve metadatos de fuentes
 | GET | `/api/v1/articulos/{articulo}/listados/{listado}/contribuyentes` | Contribuyentes de un listado. |
 | GET | `/api/v1/articulos/69/documento-tecnico` | Celdas del documento técnico del artículo 69. |
 | GET | `/api/v1/documentos/69/documento-tecnico` | Alias del documento técnico. |
-| GET | `/api/EdosEfos/all69` | Alias heredado de la consulta global. |
+| GET | `/api/EdosEfos/all69` | Consulta global heredada, paginada por número de página; máximo 10,000 registros y filtro opcional `tipoId`. |
 | POST | `/api/Rfc/Listado69` | Alias heredado de consulta masiva. |
 
 ## Base de datos

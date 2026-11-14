@@ -31,6 +31,9 @@ builder.Services.AddScoped<SqlRepository>(s => new SqlRepository(
     builder.Configuration.GetConnectionString("MonitorRFC") ?? "",
     s.GetRequiredService<ILoggerFactory>().CreateLogger<SqlRepository>()));
 builder.Services.AddScoped<IRfcQueryService>(s => s.GetRequiredService<SqlRepository>());
+builder.Services.AddScoped<MonitorRFC.Infrastructure.Persistence.LegacyRepository>(s => new MonitorRFC.Infrastructure.Persistence.LegacyRepository(
+    builder.Configuration.GetConnectionString("MonitorRFC") ?? "",
+    s.GetRequiredService<ILoggerFactory>().CreateLogger<MonitorRFC.Infrastructure.Persistence.LegacyRepository>()));
 builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = 8 * 1024 * 1024);
 builder.Services.AddRateLimiter(o =>
 {

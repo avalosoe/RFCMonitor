@@ -14,11 +14,18 @@ GO
 -- ============================================================================
 
 -- 1. Vistas de la solución RFCMonitor
+DROP VIEW IF EXISTS dbo.vw_LegacyInfoFuentes;
+DROP VIEW IF EXISTS dbo.vw_LegacyNoLocalizados;
+DROP VIEW IF EXISTS dbo.vw_LegacyRfcArticulos;
+DROP VIEW IF EXISTS dbo.vw_LegacyRfcDetalle;
 DROP VIEW IF EXISTS dbo.Vigentes;
 DROP VIEW IF EXISTS dbo.VistaContribuyentesVigentes;
 GO
 
 -- 2. Procedimientos almacenados de la solución RFCMonitor
+DROP PROCEDURE IF EXISTS dbo.PA_Legacy_EdosEfos_Consultar;
+DROP PROCEDURE IF EXISTS dbo.PA_Legacy_EdosEfos_All;
+DROP PROCEDURE IF EXISTS dbo.PA_Legacy_EdosEfos_All69;
 DROP PROCEDURE IF EXISTS dbo.AplicarCambiosSAT;
 DROP PROCEDURE IF EXISTS dbo.AplicarPublicacionDOF;
 DROP PROCEDURE IF EXISTS dbo.ConsultarContribuyentesVigentes;
