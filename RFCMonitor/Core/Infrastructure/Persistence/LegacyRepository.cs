@@ -7,7 +7,7 @@ using Microsoft.Extensions.Logging;
 
 namespace MonitorRFC.Infrastructure.Persistence;
 
-public sealed record LegacyAll69Request(int Page, int PageSize, int? TipoId, string? Articulo, string? Listado, string? Situacion);
+public sealed record LegacyAll69Request(int? Page, int? PageSize, int? TipoId, string? Articulo, string? Listado, string? Situacion);
 
 /// <summary>
 /// Consultas de compatibilidad con el proyecto legado (RfcStatusApi). Usa exclusivamente objetos nuevos
@@ -158,8 +158,8 @@ public sealed class LegacyRepository(string connectionString, ILogger<LegacyRepo
         await using var c = await OpenAsync(ct);
         using var cmd = new SqlCommand("dbo.PA_Legacy_EdosEfos_All69", c)
         { CommandType = CommandType.StoredProcedure, CommandTimeout = 900 };
-        cmd.Parameters.Add("@Pagina", SqlDbType.Int).Value = request.Page;
-        cmd.Parameters.Add("@TamanoPagina", SqlDbType.Int).Value = request.PageSize;
+        cmd.Parameters.Add("@Pagina", SqlDbType.Int).Value = (object?)request.Page ?? DBNull.Value;
+        cmd.Parameters.Add("@TamanoPagina", SqlDbType.Int).Value = (object?)request.PageSize ?? DBNull.Value;
         cmd.Parameters.Add("@Articulo", SqlDbType.VarChar, 16).Value = (object?)request.Articulo ?? DBNull.Value;
         cmd.Parameters.Add("@Listado", SqlDbType.VarChar, 100).Value = (object?)request.Listado ?? DBNull.Value;
         cmd.Parameters.Add("@Situacion", SqlDbType.NVarChar, 200).Value = (object?)request.Situacion ?? DBNull.Value;
@@ -168,7 +168,8 @@ public sealed class LegacyRepository(string connectionString, ILogger<LegacyRepo
         var info = await LeerInfoAsync(r, ct);               // 1) Metadatos
         await r.NextResultAsync(ct);                          // 2) Total del universo filtrado
         long total = 0;
-        if (await r.ReadAsync(ct)) total = r.GetInt64(0);
+        int pagina = 1, tamanoPagina = 0;
+        if (await r.ReadAsync(ct)) { total = r.GetInt64(0); pagina = r.GetInt32(1); tamanoPagina = r.GetInt32(2); }
         await r.NextResultAsync(ct);                          // 3) Datos de la página
 
         using var w = new Utf8JsonWriter(output, new JsonWriterOptions { SkipValidation = true });
@@ -221,15 +222,15 @@ public sealed class LegacyRepository(string connectionString, ILogger<LegacyRepo
         w.WriteEndArray();
 
         w.WriteStartObject("paginacion");
-        var inicio = total == 0 ? 0 : ((long)request.Page - 1) * request.PageSize + 1;
+        var inicio = total == 0 ? 0 : ((long)pagina - 1) * tamanoPagina + 1;
         var final = inicio == 0 ? 0 : inicio + escritos - 1;
-        var totalPaginas = total == 0 ? 0 : (total + request.PageSize - 1) / request.PageSize;
-        w.WriteNumber("pagina", request.Page);
+        var totalPaginas = total == 0 ? 0 : (total + tamanoPagina - 1) / tamanoPagina;
+        w.WriteNumber("pagina", pagina);
         w.WriteNumber("registroInicial", inicio);
         w.WriteNumber("registroFinal", final);
         w.WriteNumber("totalRegistros", total);
         w.WriteNumber("totalPaginas", totalPaginas);
-        if (request.Page < totalPaginas) w.WriteNumber("siguientePagina", request.Page + 1); else w.WriteNull("siguientePagina");
+        if (pagina < totalPaginas) w.WriteNumber("siguientePagina", pagina + 1); else w.WriteNull("siguientePagina");
         w.WriteEndObject();
 
         w.WriteEndObject(); // resultado
@@ -237,7 +238,7 @@ public sealed class LegacyRepository(string connectionString, ILogger<LegacyRepo
         w.Flush();
         await output.FlushAsync(ct);
         logger?.LogInformation("[Legacy] all69: página {Page}, registros {Start}-{End} de {Total}.",
-            request.Page, inicio, final, total);
+            pagina, inicio, final, total);
 
         void WriteNullable(string name, string? value)
         {

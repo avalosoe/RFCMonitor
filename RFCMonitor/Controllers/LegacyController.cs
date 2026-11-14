@@ -13,8 +13,6 @@ namespace MonitorRFC.Controllers;
 public sealed class LegacyController(LegacyRepository repository, ILogger<LegacyController> logger) : ControllerBase
 {
     private const int MaxRfcs = 10_000;
-    private const int DefaultPageSize = 10_000;
-    private const int MaxPageSize = 10_000;
 
     /// <summary>Consulta por RFC (69-B, 69, 49 Bis…): un solo registro por RFC con los artículos concatenados.</summary>
     [HttpPost("api/Rfc/Edos-Efos")]
@@ -59,11 +57,8 @@ public sealed class LegacyController(LegacyRepository repository, ILogger<Legacy
 
     /// <summary>Todos los RFC de todos los artículos, paginados y opcionalmente filtrados por tipo del catálogo.</summary>
     [HttpGet("api/EdosEfos/all69")]
-    public IActionResult All69([FromQuery] int pagina = 1, [FromQuery] int tamanoPagina = DefaultPageSize, [FromQuery] int? tipoId = null)
+    public IActionResult All69([FromQuery] int? pagina = null, [FromQuery] int? tamanoPagina = null, [FromQuery] int? tipoId = null)
     {
-        if (pagina < 1) return Problem(statusCode: 400, title: "'pagina' debe ser mayor o igual a 1.");
-        if (tamanoPagina is < 1 or > MaxPageSize)
-            return Problem(statusCode: 400, title: $"'tamanoPagina' debe estar entre 1 y {MaxPageSize:N0}.");
 
         var tipo = tipoId.HasValue ? CatalogoTipos.ObtenerPorId(tipoId.Value) : null;
         if (tipoId.HasValue && tipo is null)
@@ -129,6 +124,12 @@ public sealed class LegacyAll69Result(LegacyRepository repository, LegacyAll69Re
             await repository.WriteAll69Async(http.Response.BodyWriter, request, http.RequestAborted);
         }
         catch (OperationCanceledException) { }
+        catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number is 50002 or 50003 && !http.Response.HasStarted)
+        {
+            // Validación de paginación hecha por el procedimiento (única fuente de los límites).
+            http.Response.StatusCode = 400;
+            await http.Response.WriteAsync(System.Text.Json.JsonSerializer.Serialize(new { success = false, message = ex.Message }));
+        }
         catch (Exception ex)
         {
             logger.LogError(ex, "Fallo en el endpoint legado all69.");

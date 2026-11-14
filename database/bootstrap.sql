@@ -1282,23 +1282,34 @@ GO
 -- GET /api/EdosEfos/all69: todos los RFC de todos los artículos, paginado por número de página.
 -- Resultados: 1) metadatos, 2) total del universo filtrado, 3) datos de la página.
 CREATE OR ALTER PROCEDURE dbo.PA_Legacy_EdosEfos_All69
-    @Pagina int = 1,
-    @TamanoPagina int = 10000,
+    @Pagina int = NULL,
+    @TamanoPagina int = NULL,
     @Articulo varchar(16) = NULL,
     @Listado varchar(100) = NULL,
     @Situacion nvarchar(200) = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
+    -- ÚNICO lugar donde se define el tamaño de página de /api/EdosEfos/all69.
+    -- Para cambiarlo basta modificar estas dos constantes y volver a ejecutar este script (sin recompilar la API).
+    DECLARE @TamanoDefecto int = 10000;   -- tamaño cuando el cliente no envía tamanoPagina
+    DECLARE @TamanoMaximo  int = 10000;   -- máximo permitido por página
+
+    SET @Pagina = COALESCE(@Pagina, 1);
+    SET @TamanoPagina = COALESCE(@TamanoPagina, @TamanoDefecto);
     IF @Pagina < 1
-        THROW 50002, '@Pagina debe ser mayor o igual a 1.', 1;
-    IF @TamanoPagina NOT BETWEEN 1 AND 10000
-        THROW 50003, '@TamanoPagina debe estar entre 1 y 10000.', 1;
+        THROW 50002, 'pagina debe ser mayor o igual a 1.', 1;
+    IF @TamanoPagina NOT BETWEEN 1 AND @TamanoMaximo
+    BEGIN
+        DECLARE @Mensaje nvarchar(200) = CONCAT(N'tamanoPagina debe estar entre 1 y ', @TamanoMaximo, N'.');
+        THROW 50003, @Mensaje, 1;
+    END;
     DECLARE @Omitir bigint = (CONVERT(bigint, @Pagina) - 1) * @TamanoPagina;
 
     SELECT FechaPortal69b, UltimaDescarga69b, UltimoIntento69b, FechaPortalNL, UltimaDescargaNL, UltimoIntentoNL, FechaPortalBis, UltimaDescargaBis, UltimoIntentoBis FROM dbo.vw_LegacyInfoFuentes;
 
-    SELECT COUNT_BIG(*) AS TotalRegistros
+    -- Total del universo filtrado + valores efectivos de paginación (la API solo los refleja en la respuesta).
+    SELECT COUNT_BIG(*) AS TotalRegistros, @Pagina AS Pagina, @TamanoPagina AS TamanoPagina
     FROM dbo.vw_LegacyRfcDetalle d
     WHERE d.Rn = 1
       AND (@Articulo IS NULL OR EXISTS (
