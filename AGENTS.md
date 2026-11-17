@@ -126,7 +126,7 @@ Está desarrollada en **.NET 9** y se compone de tres proyectos principales:
 | **`RFCMonitor.Agent.Manager`** | WPF Elevado (`net9.0-windows`) | Aplicación de interfaz gráfica con privilegios elevados para configuración segura (DPAPI), instalación, arranque, detención y monitoreo del servicio Worker. |
 
 Adicionalmente:
-- `RFCMonitor/database/`: Scripts SQL numerados para la estructura, versionamiento y mantenimiento en SQL Server (esquema `dbo`).
+- `RFCMonitor/database/`: `bootstrap.sql` implementa la estructura completa y `reset.sql` elimina los objetos del proyecto para reiniciar pruebas en SQL Server (esquema `dbo`).
 - `RFCMonitor/scripts/`: Scripts auxiliares de soporte y automatización.
 
 ---
@@ -148,4 +148,4 @@ Adicionalmente:
 4. **Compatibilidad y Versionamiento:**
    - Mantener consistencia con las rutas nuevas `/api/v1/...` preservando los endpoints alias compatibles (`/api/EdosEfos/all69`, `/api/Rfc/Listado69`) requeridos por clientes legados.
 5. **Base de Datos:**
-   - Cualquier cambio en el modelo relacional debe reflejarse en los scripts ordenados de `RFCMonitor/database/` siguiendo las convenciones existentes.
+   - Cualquier cambio en el modelo relacional debe reflejarse en `RFCMonitor/database/bootstrap.sql` y, si agrega un objeto, en `RFCMonitor/database/reset.sql`.
