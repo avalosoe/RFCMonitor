@@ -350,7 +350,22 @@ Esta sección documenta los elementos compartidos que articulan tanto al Servici
 
 ## 1. Modelo de Base de Datos (SQL Server)
 
-La base de datos opera íntegramente sobre el esquema `dbo` en **Microsoft SQL Server 2019 o posterior** (compatibilidad 150+). Se implementa con `database/bootstrap.sql` y se reinicia de forma limpia con `database/reset.sql`.
+La base de datos opera íntegramente sobre el esquema `dbo` en **Microsoft SQL Server 2019 o posterior** (compatibilidad 150+). El stack de persistencia usa SQL Server, T-SQL *set-based*, TVP para lotes de RFC, índices relacionales y hashes SHA-256 calculados por la aplicación .NET 9; no requiere SQL Agent, CLR, usuarios, roles ni secretos en los scripts.
+
+`database/bootstrap.sql` se conserva como el bootstrap autocontenido y canónico. `database/objects` contiene el mismo modelo separado por objeto para revisión, despliegue versionado y diagnóstico; `database/reset.sql` elimina únicamente objetos de MonitorRFC del esquema `dbo` para pruebas.
+
+### Organización y orden de despliegue
+
+Los archivos de `database/objects` se ejecutan en orden léxico ascendente. El prefijo numérico representa la dependencia: `00` tipo de tabla; `10`–`21` tablas, semillas y sus índices; `30`–`41` procedimientos de ingesta y consulta; `50`–`53` vistas de compatibilidad; `60`–`62` procedimientos legados que consumen esas vistas. Cada archivo contiene un solo objeto lógico, incluyendo sus alteraciones de compatibilidad, índices y semillas cuando corresponda.
+
+```powershell
+# Instalación/reconstrucción autocontenida
+sqlcmd -S SERVIDOR -d MonitorRFC -E -b -i .\database\bootstrap.sql
+
+# Despliegue por objetos independientes
+Get-ChildItem .\database\objects\*.sql | Sort-Object Name |
+    ForEach-Object { sqlcmd -S SERVIDOR -d MonitorRFC -E -b -i $_.FullName }
+```
 
 ```mermaid
 erDiagram
@@ -365,24 +380,25 @@ erDiagram
 ```
 
 ### 1.1. Tablas y Responsabilidad
-- **`dbo.Articulo`**: Catálogo de los 4 artículos fiscales soportados (`69`, `69-b`, `69-b-bis`, `49-bis`).
+- **`dbo.Articulo`**: Catálogo semilla de los 4 artículos fiscales soportados (`69`, `69-b`, `69-b-bis`, `49-bis`); su clave primaria es `Clave` y el orden de presentación se guarda en `Orden`.
 - **`dbo.ControlFuenteSAT`**: Estado operativo de fuentes SAT: URL, hash del archivo, fecha de portal, última descarga exitosa, conteos y métricas.
-- **`dbo.ContribuyenteVigente`**: Padrón activo y consolidado de contribuyentes por artículo y listado. Almacena más de 30 campos relacionales y el resumen SHA-256 (`HashFila VARBINARY(32)`).
+- **`dbo.ContribuyenteVigente`**: Padrón activo y consolidado de contribuyentes por artículo y listado. Permite múltiples registros publicados por RFC/listado, cuenta con índices por RFC, artículo/listado, hash y fecha, y almacena el resumen SHA-256 en `HashFila BINARY(32)`.
 - **`dbo.ContribuyenteHistorial`**: Auditoría histórica inmutable (append-only) de cada alta, cambio de situación fiscal o sentencia.
-- **`dbo.PublicacionDOF`**: Edictos y notas oficiales extraídas de SIDOF con número de nota, edición, título y fecha.
+- **`dbo.PublicacionDOF`**: Edictos y notas oficiales extraídas de SIDOF con `CodNota` como clave primaria, edición, título, fecha y un índice por fecha/artículo.
 - **`dbo.ControlCoberturaDOF`**: Seguimiento diario de cobertura del DOF para evitar vacíos cronológicos.
 - **`dbo.TrabajoDOF`**: Estado, rango de fechas, progreso porcentual y resultados JSON de sincronizaciones DOF bajo demanda.
 - **`dbo.NotaPendienteDOF`**: Registro de notas del DOF que requieren revisión manual por formato atípico.
 - **`dbo.AdjuntoDOF`**: Metadatos y rutas de almacenamiento de documentos PDF o imágenes anexas al DOF.
-- **`dbo.DocumentoTecnico69`**: Matriz de celdas del documento técnico normativo del Artículo 69 (`causasymotivos.xls`).
+- **`dbo.DocumentoTecnico69`**: Matriz de celdas del documento técnico normativo del Artículo 69 (`causasymotivos.xls`), identificada por la clave compuesta hoja/fila/columna ordinal.
 - **`dbo.BitacoraEjecucion`**: Bitácora auditable de ejecuciones del Worker (fechas, duración, resultado, métricas).
-- **`dbo.BloqueoServicio`**: Candado de sesión exclusivo para serializar la ingesta y evitar colisiones concurrentes.
-- **`dbo.RfcInput` (TVP)**: Tipo de tabla en memoria (`TABLE (Rfc VARCHAR(20) PRIMARY KEY)`) para consultas masivas de alto rendimiento.
+- **`dbo.BloqueoServicio`**: Candado de sesión exclusivo para serializar la ingesta y evitar colisiones concurrentes, identificado por `Recurso` y protegido con `Propietario`, `FencingToken` y expiración.
+- **`dbo.RfcInput` (TVP)**: Tipo de tabla en memoria (`Rfc NVARCHAR(100)` con colación binaria y `OrdenEntrada`) para consultas masivas que conservan el orden de la petición.
 
 ### 1.2. Procedimientos Almacenados y Vistas
-- **Ingesta**: `dbo.AplicarCambiosSAT`, `dbo.AplicarPublicacionDOF`, `dbo.PublicarGeneracion`.
-- **Consultas API**: `dbo.ConsultarContribuyentesVigentes`, `dbo.ConsultarContribuyenteHistorial`, `dbo.ConsultarHistorialRfcs`, `dbo.ConsultarEstatusGeneral`, `dbo.DocumentoTecnico`, `dbo.EstadoFuentes`.
-- **Compatibilidad Legada**: `dbo.PA_Legacy_EdosEfos_Consultar`, `dbo.PA_Legacy_EdosEfos_All`, `dbo.PA_Legacy_EdosEfos_All69`, `dbo.vw_LegacyRfcDetalle`, `dbo.vw_LegacyRfcArticulos`, `dbo.vw_LegacyInfoFuentes`, `dbo.vw_LegacyNoLocalizados`.
+- **Ingesta y control**: `dbo.AplicarCambiosSAT` aplica el delta SAT; `dbo.AplicarPublicacionDOF` integra notas DOF; `dbo.PublicarGeneracion` confirma una generación consistente.
+- **Consultas API**: `dbo.ConsultarContribuyentesVigentes`, `dbo.ConsultarContribuyenteHistorial`, `dbo.ConsultarHistorialRfcs` y `dbo.ConsultarEstatusGeneral` devuelven datos actuales, históricos y riesgo; `dbo.Encabezado`, `dbo.Apariciones` y `dbo.Conteos` abastecen los resultados de streaming; `dbo.DocumentoTecnico` y `dbo.EstadoFuentes` entregan la matriz técnica y salud de fuentes.
+- **Vistas de compatibilidad**: `dbo.vw_LegacyRfcDetalle`, `dbo.vw_LegacyRfcArticulos`, `dbo.vw_LegacyNoLocalizados` y `dbo.vw_LegacyInfoFuentes` adaptan los datos vigentes al contrato histórico.
+- **Procedimientos legados**: `dbo.PA_Legacy_EdosEfos_Consultar`, `dbo.PA_Legacy_EdosEfos_All` y `dbo.PA_Legacy_EdosEfos_All69` respaldan, respectivamente, la consulta por RFC, la exportación EFOS y la lista global paginada.
 
 ---
 
